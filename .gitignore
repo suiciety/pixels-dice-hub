@@ -1,0 +1,17 @@
+.DS_Store
+.idea/
+.vscode/
+.esphome/
+
+**/build/
+managed_components/
+
+/sdkconfig
+/sdkconfig.old
+/headless/sdkconfig
+/headless/sdkconfig.old
+
+secrets.yaml
+*.bin
+*.elf
+*.map

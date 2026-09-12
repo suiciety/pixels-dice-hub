@@ -1,0 +1,24 @@
+idf_component_register(
+  SRCS
+    "app_main.cpp"
+    "board.cpp"
+    "dice_model.cpp"
+    "pixels_ble.cpp"
+    "preferences.cpp"
+    "ui.cpp"
+    "web_server.cpp"
+  INCLUDE_DIRS "."
+  REQUIRES
+    bt
+    driver
+    esp_lcd
+    esp_lcd_jd9853
+    esp_lcd_touch_axs5106
+    esp_event
+    esp_http_server
+    esp_netif
+    esp_timer
+    esp_wifi
+    nvs_flash
+    pixels_protocol
+)

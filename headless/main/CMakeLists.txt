@@ -1,0 +1,20 @@
+idf_component_register(
+  SRCS
+    "app_main.cpp"
+    "../../main/dice_model.cpp"
+    "../../main/pixels_ble.cpp"
+    "../../main/preferences.cpp"
+    "../../main/web_server.cpp"
+  INCLUDE_DIRS
+    "."
+    "../../main"
+  REQUIRES
+    bt
+    esp_event
+    esp_http_server
+    esp_netif
+    esp_timer
+    esp_wifi
+    nvs_flash
+    pixels_protocol
+)

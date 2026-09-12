@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="172" height="320" viewBox="0 0 172 320">
+  <rect width="172" height="320" fill="#0b1020"/>
+  <g font-family="Montserrat,DejaVu Sans,sans-serif">
+    <text x="10" y="21" fill="#f8fafc" font-size="14">PAIR DICE</text>
+    <rect x="110" y="6" width="54" height="30" rx="6" fill="#2563eb"/><text x="137" y="25" fill="#fff" font-size="12" text-anchor="middle">DONE</text>
+    <rect x="8" y="42" width="156" height="30" rx="6" fill="#166534"/><text x="86" y="61" fill="#fff" font-size="12" text-anchor="middle">WIFI CONNECTED - TAP TO DISABLE</text>
+    <g transform="translate(8 78)">
+      <rect width="156" height="48" rx="8" fill="#172033" stroke="#22c55e"/>
+      <text x="6" y="16" fill="#fff" font-size="12">D6  Pixel5e793a3e</text><text x="6" y="39" fill="#94a3b8" font-size="12">5e793a3e  -67dBm</text>
+      <rect x="96" y="9" width="54" height="30" rx="6" fill="#334155"/><text x="123" y="28" fill="#fff" font-size="12" text-anchor="middle">REMOVE</text>
+    </g>
+    <g transform="translate(8 130)">
+      <rect width="156" height="48" rx="8" fill="#172033" stroke="#22c55e"/>
+      <text x="6" y="16" fill="#fff" font-size="12">D20  Pixel391dc72a</text><text x="6" y="39" fill="#94a3b8" font-size="12">391dc72a  -72dBm</text>
+      <rect x="96" y="9" width="54" height="30" rx="6" fill="#334155"/><text x="123" y="28" fill="#fff" font-size="12" text-anchor="middle">REMOVE</text>
+    </g>
+    <g transform="translate(8 182)">
+      <rect width="156" height="48" rx="8" fill="#172033" stroke="#38bdf8"/>
+      <text x="6" y="16" fill="#fff" font-size="12">D8  Nearby Pixel</text><text x="6" y="39" fill="#94a3b8" font-size="12">83fc15a2  -79dBm</text>
+      <rect x="96" y="9" width="54" height="30" rx="6" fill="#2563eb"/><text x="123" y="28" fill="#fff" font-size="12" text-anchor="middle">ADD</text>
+    </g>
+    <text x="86" y="252" fill="#64748b" font-size="11" text-anchor="middle">scroll for more dice</text>
+  </g>
+</svg>
