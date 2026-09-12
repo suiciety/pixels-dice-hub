@@ -35,7 +35,8 @@ Each tile can contain:
 - Clearing a round does not erase the last-20-roll history.
 - Tap a die tile to identify it with a short blink and open its newest-first
   history of up to 20 completed rolls. The page also displays battery level,
-  charging state, live roll state, and signal strength. Closing the history
+  charging state, live roll state, signal strength, firmware/profile metadata,
+  and temperatures retrieved through a queued connection. Closing the history
   view blinks it again.
 - Tap the header pairing icon to open registration.
 - The header shows Wi-Fi as `OFF`, `AP`, `...` while connecting, or `NET`.

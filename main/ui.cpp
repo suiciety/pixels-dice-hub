@@ -63,6 +63,14 @@ void BlinkDie(uint32_t pixel_id) {
   }
 }
 
+void RefreshDieInfo(uint32_t pixel_id) {
+  const esp_err_t result = RequestPixelsInfo(pixel_id);
+  if (result != ESP_OK) {
+    ESP_LOGW(kTag, "Unable to refresh Pixel %08lx info: %s",
+             static_cast<unsigned long>(pixel_id), esp_err_to_name(result));
+  }
+}
+
 void WifiToggle(lv_event_t *) {
   const bool enable = !IsWebNetworkEnabled();
   const esp_err_t result = SetWebNetworkEnabled(model, enable);
@@ -128,6 +136,7 @@ void PairAction(lv_event_t *event) {
       paired ? model->Unpair(pixel_id) : model->Pair(pixel_id);
   if (changed && !paired) {
     BlinkDie(pixel_id);
+    RefreshDieInfo(pixel_id);
   }
   SavePreferences(*model);
   rendered_revision = 0;
@@ -171,10 +180,30 @@ void UpdateHistoryStatus(const Die *die) {
     lv_label_set_text(history_status_label, "WAITING FOR DIE STATUS");
     return;
   }
-  char status[64];
-  std::snprintf(status, sizeof(status), "BAT %u%%  CHARGING %s\n%s  RSSI %ddBm",
-                die->battery, die->charging ? "YES" : "NO",
-                pixels::RollStateName(die->roll_state), die->rssi);
+  char status[160];
+  if (die->has_connected_info && die->has_temperature) {
+    std::snprintf(
+        status, sizeof(status),
+        "%u%% %s  %s  %ddBm\nFW %u  SET %08lx\nMCU %.1fC  BAT %.1fC",
+        die->battery, die->charging ? "YES" : "NO",
+        pixels::RollStateName(die->roll_state), die->rssi,
+        die->firmware_version,
+        static_cast<unsigned long>(die->profile_hash),
+        die->mcu_temperature_centi_c / 100.0,
+        die->battery_temperature_centi_c / 100.0);
+  } else if (die->has_connected_info) {
+    std::snprintf(status, sizeof(status),
+                  "%u%% %s  %s  %ddBm\nFW %u  SET %08lx",
+                  die->battery, die->charging ? "YES" : "NO",
+                  pixels::RollStateName(die->roll_state), die->rssi,
+                  die->firmware_version,
+                  static_cast<unsigned long>(die->profile_hash));
+  } else {
+    std::snprintf(status, sizeof(status),
+                  "BAT %u%%  CHARGING %s\n%s  RSSI %ddBm\nREFRESHING DETAILS",
+                  die->battery, die->charging ? "YES" : "NO",
+                  pixels::RollStateName(die->roll_state), die->rssi);
+  }
   lv_label_set_text(history_status_label, status);
 }
 
@@ -221,13 +250,16 @@ void BuildHistory(uint32_t pixel_id, uint64_t now_ms) {
   history_status_label =
       MakeLabel(history_page, "", &lv_font_montserrat_12, kMuted);
   lv_obj_set_pos(history_status_label, 2, 24);
+  lv_obj_set_width(history_status_label,
+                   std::max(lv_obj_get_width(history_page) - 16, 80L));
+  lv_label_set_long_mode(history_status_label, LV_LABEL_LONG_WRAP);
   UpdateHistoryStatus(selected);
 
   lv_obj_t *list = lv_obj_create(history_page);
   lv_obj_set_size(list, lv_pct(100),
-                  std::max<lv_coord_t>(lv_obj_get_height(history_page) - 64,
+                  std::max<lv_coord_t>(lv_obj_get_height(history_page) - 84,
                                        60));
-  lv_obj_set_pos(list, 0, 58);
+  lv_obj_set_pos(list, 0, 78);
   lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(list, 0, 0);
   lv_obj_set_style_pad_all(list, 0, 0);
@@ -276,6 +308,7 @@ void OpenHistory(lv_event_t *event) {
   history_pixel_id = static_cast<uint32_t>(
       reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
   BlinkDie(history_pixel_id);
+  RefreshDieInfo(history_pixel_id);
   BuildHistory(
       history_pixel_id,
       static_cast<uint64_t>(esp_timer_get_time() / 1000));

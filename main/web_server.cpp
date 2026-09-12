@@ -13,6 +13,9 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nvs.h"
 #include "pixels_ble.h"
 #include "preferences.h"
@@ -30,6 +33,10 @@ std::atomic_bool station_enabled;
 std::atomic<NetworkStatus> network_status{NetworkStatus::kOff};
 bool wifi_initialized;
 std::atomic_bool wifi_started;
+std::atomic_bool sse_active;
+std::atomic_bool sse_shutdown;
+std::atomic_int sse_socket{-1};
+SemaphoreHandle_t sse_stopped;
 
 constexpr char kIndexHtml[] = R"HTML(<!doctype html>
 <html lang="en">
@@ -63,6 +70,7 @@ input{min-width:0;border:1px solid #475569;background:#111827;color:var(--text);
 .modal{position:fixed;inset:0;background:#000a;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal[hidden]{display:none}.modal-card{background:var(--bg);border:1px solid #475569;border-radius:14px;padding:16px;
 width:min(460px,100%);max-height:85vh;overflow:auto}.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.die-info{white-space:pre-line;margin:8px 0}
 @media(max-width:560px){main{padding:10px}form{grid-template-columns:1fr}.grid{grid-template-columns:repeat(2,1fr)}
 .card{min-height:105px}.roll{font-size:42px}}
 </style>
@@ -83,7 +91,7 @@ width:min(460px,100%);max-height:85vh;overflow:auto}.modal-head{display:flex;ali
 </main>
 <div id="die-modal" class="modal" hidden onclick="closeDieHistory()"><div class="modal-card" onclick="event.stopPropagation()">
 <div class="modal-head"><div><h2 id="die-title">Die history</h2><div id="die-status" class="muted"></div>
-<div id="die-subtitle" class="muted"></div></div>
+<div id="die-info" class="muted die-info"></div><div id="die-subtitle" class="muted"></div></div>
 <button onclick="closeDieHistory()">Close</button></div><div id="die-history"></div>
 <button onclick="loadDieHistory()" style="width:100%;margin-top:8px">Refresh</button></div></div>
 <script>
@@ -91,19 +99,24 @@ const colors=['#8b5cf6','#38bdf8','#f59e0b','#22c55e','#ec4899','#06b6d4','#f973
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function action(op,id){await fetch('/api/action?op='+op+(id?'&id='+id:''),{method:'POST'});refresh()}
 function blink(id){if(id)fetch('/api/action?op=blink&id='+id,{method:'POST'})}
+function inspect(id){if(id)fetch('/api/action?op=info&id='+id,{method:'POST'})}
 function dieCard(d,i){const stateClass=d.state.toLowerCase().replaceAll(' ','-');return `<article class="card die ${stateClass} ${d.offline?'offline':''}" style="--die:${colors[i%colors.length]}" onclick="showDieHistory('${d.id}')">
 <div class="die-head"><b>${esc(d.type)}</b><span class="muted">${d.offline?'OFF':d.battery+'%'}</span></div>
 <div class="roll">${d.hasRoll?d.roll:'-'}</div><div class="die-head"><span class="muted">${esc(d.name||('Pixel '+d.id))}</span>
 <span class="die-state">${d.offline?'OFFLINE':esc(d.state)}</span></div></article>`}
-let refreshTimer,refreshing=false,currentDice=[],selectedDieId='';
+let refreshTimer,refreshing=false,currentDice=[],selectedDieId='',eventsConnected=false;
 function updateDieStatus(){const d=currentDice.find(d=>d.id===selectedDieId);if(!d)return;
 document.querySelector('#die-title').textContent=`${d.type} ${d.name||'Pixel'}`;
-document.querySelector('#die-status').textContent=`Battery ${d.battery}% · ${d.charging?'charging':'not charging'} · ${d.offline?'offline':d.state} · ${d.rssi} dBm`}
+document.querySelector('#die-status').textContent=`Battery ${d.battery}% · ${d.batteryState} · ${d.offline?'offline':d.state} · ${d.rssi} dBm`;
+const details=[];if(d.hasConnectedInfo){details.push(`Firmware ${d.firmwareVersion||'legacy'} · build ${d.firmwareTimestamp}`);
+details.push(`Profile ${d.profileHash} · ${d.availableFlash} bytes free`)}
+if(d.mcuTemperature!==null)details.push(`MCU ${d.mcuTemperature.toFixed(2)} °C · battery ${d.batteryTemperature.toFixed(2)} °C`);
+document.querySelector('#die-info').textContent=details.join('\n')||'Connected details not refreshed yet'}
 async function loadDieHistory(){const requestedId=selectedDieId;if(!requestedId)return;const r=await fetch('/api/history?id='+requestedId,{cache:'no-store'});
 const h=await r.json();if(requestedId!==selectedDieId)return;updateDieStatus();
 document.querySelector('#die-subtitle').textContent=`${h.history.length} of the last 20 rolls`;
 document.querySelector('#die-history').innerHTML=h.history.map(x=>`<div class="row"><div class="grow muted">${Math.floor(x.ageMs/1000)}s ago</div><div class="history-value">${x.value}</div></div>`).join('')||'<div class="empty">No completed rolls yet</div>'}
-function showDieHistory(id){selectedDieId=id;document.querySelector('#die-modal').hidden=false;blink(id);loadDieHistory()}
+function showDieHistory(id){selectedDieId=id;document.querySelector('#die-modal').hidden=false;blink(id);inspect(id);loadDieHistory()}
 function closeDieHistory(){blink(selectedDieId);selectedDieId='';document.querySelector('#die-modal').hidden=true}
 async function refresh(){if(refreshing)return;refreshing=true;try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();
 currentDice=s.dice;updateDieStatus();
@@ -115,11 +128,33 @@ const paired=s.dice.map(d=>`<div class="row"><div class="grow"><b>${esc(d.type)}
 const found=s.candidates.map(d=>`<div class="row"><div class="grow"><b>${esc(d.type)} ${esc(d.name)}</b><div class="muted">${d.id} · ${d.rssi} dBm</div></div><button onclick="action('pair','${d.id}')">Add</button></div>`);
 document.querySelector('#pairing').innerHTML=[...paired,...found].join('')||'<div class="empty">No Pixels discovered yet</div>';
 document.querySelector('#history').innerHTML=s.history.map(h=>`<div class="row"><div class="grow"><b>${esc(h.type)} ${esc(h.name||('Pixel '+h.id))}</b><div class="muted">${Math.floor(h.ageMs/1000)}s ago</div></div><div class="history-value">${h.value}</div></div>`).join('')||'<div class="empty">No completed rolls yet</div>';
-}catch(e){document.querySelector('#status').textContent='Reconnecting...'}finally{refreshing=false;clearTimeout(refreshTimer);refreshTimer=setTimeout(refresh,750)}}
+}catch(e){document.querySelector('#status').textContent='Reconnecting...'}finally{refreshing=false}}
+function scheduleFallback(){clearTimeout(refreshTimer);refreshTimer=setTimeout(async()=>{await refresh();scheduleFallback()},eventsConnected?15000:2000)}
+if(window.EventSource){const events=new EventSource('/api/events');
+events.onopen=()=>{eventsConnected=true;scheduleFallback()};
+events.addEventListener('state',()=>refresh());
+events.onerror=()=>{eventsConnected=false;scheduleFallback()}}
 document.querySelector('#wifi').addEventListener('submit',async e=>{e.preventDefault();const b=new URLSearchParams(new FormData(e.target));
 const r=await fetch('/api/wifi',{method:'POST',body:b});alert(await r.text());e.target.reset()});
-refresh();
+refresh();scheduleFallback();
 </script></body></html>)HTML";
+
+const char *BatteryStateName(const Die &die) {
+  switch (die.battery_state) {
+  case 1:
+    return "low";
+  case 2:
+    return "charging";
+  case 3:
+    return "charged";
+  case 4:
+    return "charging position";
+  case 5:
+    return "battery error";
+  default:
+    return die.charging ? "charging" : "normal";
+  }
+}
 
 void SendJsonString(httpd_req_t *request, const char *value) {
   httpd_resp_sendstr_chunk(request, "\"");
@@ -163,7 +198,7 @@ void SendJsonString(httpd_req_t *request, const char *value) {
 }
 
 void SendDie(httpd_req_t *request, const Die &die, uint64_t now_ms) {
-  char buffer[256];
+  char buffer[512];
   const bool offline =
       die.last_seen_ms == 0 || now_ms - die.last_seen_ms > 15000;
   std::snprintf(buffer, sizeof(buffer),
@@ -174,12 +209,31 @@ void SendDie(httpd_req_t *request, const Die &die, uint64_t now_ms) {
   SendJsonString(request, die.name);
   std::snprintf(buffer, sizeof(buffer),
                 ",\"roll\":%d,\"hasRoll\":%s,\"battery\":%u,"
-                "\"charging\":%s,\"rssi\":%d,\"offline\":%s,\"state\":\"%s\"}",
+                "\"batteryState\":\"%s\",\"charging\":%s,\"rssi\":%d,"
+                "\"offline\":%s,\"state\":\"%s\",\"hasConnectedInfo\":%s,"
+                "\"firmwareVersion\":%u,\"firmwareTimestamp\":%lu,"
+                "\"profileHash\":\"%08lx\",\"availableFlash\":%lu,"
+                "\"mcuTemperature\":",
                 die.last_roll, die.has_roll ? "true" : "false", die.battery,
+                BatteryStateName(die),
                 die.charging ? "true" : "false", die.rssi,
                 offline ? "true" : "false",
-                pixels::RollStateName(die.roll_state));
+                pixels::RollStateName(die.roll_state),
+                die.has_connected_info ? "true" : "false",
+                die.firmware_version,
+                static_cast<unsigned long>(die.firmware_timestamp),
+                static_cast<unsigned long>(die.profile_hash),
+                static_cast<unsigned long>(die.available_flash));
   httpd_resp_sendstr_chunk(request, buffer);
+  if (die.has_temperature) {
+    std::snprintf(buffer, sizeof(buffer), "%.2f,\"batteryTemperature\":%.2f}",
+                  die.mcu_temperature_centi_c / 100.0,
+                  die.battery_temperature_centi_c / 100.0);
+    httpd_resp_sendstr_chunk(request, buffer);
+  } else {
+    httpd_resp_sendstr_chunk(
+        request, "null,\"batteryTemperature\":null}");
+  }
 }
 
 esp_err_t IndexHandler(httpd_req_t *request) {
@@ -239,6 +293,63 @@ esp_err_t StateHandler(httpd_req_t *request) {
   }
   httpd_resp_sendstr_chunk(request, "]}");
   return httpd_resp_send_chunk(request, nullptr, 0);
+}
+
+void SseTask(void *context) {
+  auto *request = static_cast<httpd_req_t *>(context);
+  uint32_t last_revision = 0;
+  uint64_t last_send_ms = 0;
+  while (!sse_shutdown.load()) {
+    const uint64_t now_ms = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+    const uint32_t revision = model->Revision();
+    if (revision != last_revision || now_ms - last_send_ms >= 5000) {
+      char event[64];
+      std::snprintf(event, sizeof(event),
+                    "event: state\ndata: %lu\n\n",
+                    static_cast<unsigned long>(revision));
+      if (httpd_resp_send_chunk(request, event, HTTPD_RESP_USE_STRLEN) !=
+          ESP_OK) {
+        break;
+      }
+      last_revision = revision;
+      last_send_ms = now_ms;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+  httpd_req_async_handler_complete(request);
+  sse_socket.store(-1);
+  sse_active.store(false);
+  xSemaphoreGive(sse_stopped);
+  vTaskDelete(nullptr);
+}
+
+esp_err_t EventsHandler(httpd_req_t *request) {
+  bool expected = false;
+  if (!sse_active.compare_exchange_strong(expected, true)) {
+    httpd_resp_set_status(request, "503 Service Unavailable");
+    return httpd_resp_sendstr(request, "An event stream is already active");
+  }
+
+  httpd_req_t *async_request = nullptr;
+  const esp_err_t begin_result =
+      httpd_req_async_handler_begin(request, &async_request);
+  if (begin_result != ESP_OK) {
+    sse_active.store(false);
+    return begin_result;
+  }
+  xSemaphoreTake(sse_stopped, 0);
+  sse_socket.store(httpd_req_to_sockfd(async_request));
+  httpd_resp_set_type(async_request, "text/event-stream");
+  httpd_resp_set_hdr(async_request, "Cache-Control", "no-cache");
+  httpd_resp_set_hdr(async_request, "Connection", "keep-alive");
+  if (xTaskCreate(SseTask, "pixels_sse", 4096, async_request, 2, nullptr) !=
+      pdPASS) {
+    sse_socket.store(-1);
+    httpd_req_async_handler_complete(async_request);
+    sse_active.store(false);
+    return ESP_ERR_NO_MEM;
+  }
+  return ESP_OK;
 }
 
 bool QueryValue(httpd_req_t *request, const char *key, char *value,
@@ -320,12 +431,23 @@ esp_err_t ActionHandler(httpd_req_t *request) {
     }
     if (std::strcmp(operation, "blink") == 0) {
       const esp_err_t result = RequestPixelsBlink(pixel_id);
-      if (result == ESP_ERR_INVALID_STATE) {
-        httpd_resp_set_status(request, "409 Conflict");
-        return httpd_resp_sendstr(request,
-                                  "Another die command is in progress");
-      }
       if (result != ESP_OK) {
+        if (result == ESP_ERR_NO_MEM) {
+          httpd_resp_set_status(request, "503 Service Unavailable");
+          return httpd_resp_sendstr(request, "Die command queue is full");
+        }
+        return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND,
+                                   "Die is not currently available");
+      }
+      success = true;
+      save_change = false;
+    } else if (std::strcmp(operation, "info") == 0) {
+      const esp_err_t result = RequestPixelsInfo(pixel_id);
+      if (result != ESP_OK) {
+        if (result == ESP_ERR_NO_MEM) {
+          httpd_resp_set_status(request, "503 Service Unavailable");
+          return httpd_resp_sendstr(request, "Die command queue is full");
+        }
         return httpd_resp_send_err(request, HTTPD_404_NOT_FOUND,
                                    "Die is not currently available");
       }
@@ -335,6 +457,7 @@ esp_err_t ActionHandler(httpd_req_t *request) {
       success = model->Pair(pixel_id);
       if (success) {
         RequestPixelsBlink(pixel_id);
+        RequestPixelsInfo(pixel_id);
       }
     } else if (std::strcmp(operation, "unpair") == 0) {
       success = model->Unpair(pixel_id);
@@ -609,6 +732,13 @@ esp_err_t StartWebServer(DiceModel *dice_model) {
     return ESP_ERR_INVALID_ARG;
   }
   model = dice_model;
+  sse_shutdown.store(false);
+  if (sse_stopped == nullptr) {
+    sse_stopped = xSemaphoreCreateBinary();
+    if (sse_stopped == nullptr) {
+      return ESP_ERR_NO_MEM;
+    }
+  }
   if (server != nullptr) {
     return ESP_OK;
   }
@@ -641,6 +771,12 @@ esp_err_t StartWebServer(DiceModel *dice_model) {
       .handler = ActionHandler,
       .user_ctx = nullptr,
   };
+  const httpd_uri_t events = {
+      .uri = "/api/events",
+      .method = HTTP_GET,
+      .handler = EventsHandler,
+      .user_ctx = nullptr,
+  };
   const httpd_uri_t history = {
       .uri = "/api/history",
       .method = HTTP_GET,
@@ -661,6 +797,9 @@ esp_err_t StartWebServer(DiceModel *dice_model) {
     result = httpd_register_uri_handler(server, &action);
   }
   if (result == ESP_OK) {
+    result = httpd_register_uri_handler(server, &events);
+  }
+  if (result == ESP_OK) {
     result = httpd_register_uri_handler(server, &history);
   }
   if (result == ESP_OK) {
@@ -676,6 +815,17 @@ esp_err_t StopWebServer() {
   station_enabled.store(false);
   wifi_started.store(false);
   network_status.store(NetworkStatus::kOff);
+  sse_shutdown.store(true);
+  if (sse_active.load()) {
+    const int socket = sse_socket.load();
+    if (server != nullptr && socket >= 0) {
+      httpd_sess_trigger_close(server, socket);
+    }
+    if (xSemaphoreTake(sse_stopped, pdMS_TO_TICKS(5000)) != pdTRUE) {
+      ESP_LOGE(kTag, "Timed out stopping the SSE worker");
+      return ESP_ERR_TIMEOUT;
+    }
+  }
   esp_err_t result = ESP_OK;
   if (server != nullptr) {
     result = httpd_stop(server);

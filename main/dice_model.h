@@ -18,15 +18,40 @@ enum class AggregateMode : uint8_t { kSum = 0, kHigh = 1, kLow = 2 };
 
 struct Die {
   uint32_t pixel_id = 0;
+  uint32_t firmware_timestamp = 0;
+  uint32_t profile_hash = 0;
+  uint32_t available_flash = 0;
   pixels::DieType type = pixels::DieType::kUnknown;
   pixels::RollState roll_state = pixels::RollState::kUnknown;
   int last_roll = 0;
   int rssi = 0;
+  int16_t mcu_temperature_centi_c = 0;
+  int16_t battery_temperature_centi_c = 0;
   uint64_t last_seen_ms = 0;
+  uint16_t firmware_version = 0;
   uint8_t battery = 0;
+  uint8_t battery_state = 0;
   uint8_t colorway = 0;
   bool charging = false;
   bool has_roll = false;
+  bool has_connected_info = false;
+  bool has_temperature = false;
+  char name[pixels::kMaxNameLength + 1] = {};
+};
+
+struct ConnectedDieInfo {
+  uint32_t firmware_timestamp = 0;
+  uint32_t profile_hash = 0;
+  uint32_t available_flash = 0;
+  uint32_t pixel_id = 0;
+  uint16_t firmware_version = 0;
+  pixels::DieType type = pixels::DieType::kUnknown;
+  pixels::RollState roll_state = pixels::RollState::kUnknown;
+  uint8_t face_index = 0;
+  uint8_t battery = 0;
+  uint8_t battery_state = 0;
+  uint8_t colorway = 0;
+  bool has_name = false;
   char name[pixels::kMaxNameLength + 1] = {};
 };
 
@@ -70,6 +95,10 @@ public:
   void CycleAggregate();
   void ClearAggregate();
   void RestoreAggregate(AggregateMode mode);
+  void UpdateConnectedInfo(const ConnectedDieInfo &info, uint64_t now_ms);
+  void UpdateTemperature(uint32_t pixel_id, int16_t mcu_temperature_centi_c,
+                         int16_t battery_temperature_centi_c);
+  uint32_t Revision() const;
   Snapshot GetSnapshot(uint64_t now_ms) const;
   RollHistory GetRollHistory(uint32_t pixel_id) const;
 
@@ -93,6 +122,8 @@ private:
       die_history_{};
   std::array<std::size_t, kMaxDice> die_history_count_{};
   std::array<std::size_t, kMaxDice> die_history_next_{};
+  std::array<pixels::RollState, kMaxDice> advertised_roll_state_{};
+  std::array<bool, kMaxDice> has_advertised_roll_state_{};
   AggregateMode aggregate_mode_ = AggregateMode::kSum;
   int64_t aggregate_sum_ = 0;
   int aggregate_high_ = 0;

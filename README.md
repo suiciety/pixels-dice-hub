@@ -32,9 +32,12 @@ landscape layouts.
 - Persists paired Pixel IDs in NVS without requiring BLE bonding.
 - Shows die type, latest value, live state, battery, charging, RSSI, and
   online status.
+- Retrieves firmware, installed-profile, available-flash, and temperature
+  details when a die is selected.
 - Tracks sum, highest, or lowest across a manually cleared round.
 - Stores the newest 20 overall rolls and 20 rolls per die in RAM.
-- Briefly blinks a selected physical die using a serialized GATT connection.
+- Serializes identification and information commands through one short-lived
+  GATT connection at a time.
 - Provides a responsive, dependency-free web dashboard embedded in firmware.
 - Runs the touchscreen with Wi-Fi off by default for higher BLE scan duty.
 - Supports four-way touchscreen orientation using the onboard IMU.
@@ -57,8 +60,9 @@ The normal dashboard uses active BLE scanning to collect advertisements and
 scan responses without maintaining GATT connections. Pixels packets contain the
 unique Pixel ID, die type/color, roll state, face, battery level, charging
 state, and firmware timestamp. This supports eight tracked dice without
-allocating eight BLE connection slots. Identification blinks use one serialized,
-short-lived GATT connection and resume scanning after the command is sent.
+allocating eight BLE connection slots. Identification and information commands
+use a bounded queue of serialized, short-lived GATT connections and resume
+scanning after each command.
 
 ## Web dashboard
 
@@ -73,11 +77,13 @@ pairing and removal, displays live roll states, and keeps the last 20
 completed rolls overall plus the last 20 rolls for each paired die in RAM. Tap
 or click a die card to open its individual history and briefly blink that
 physical die for identification. The detail view also shows its live battery
-level, charging state, roll state, signal strength, and online status. Closing
-the history view blinks it again. The aggregate has a separate `CLEAR` action
-that does not erase history. The page refreshes live without reloading. The
-Wi-Fi form can additionally connect the device to an existing network while
-leaving the access point available.
+level, charging state, roll state, signal strength, online status, firmware
+information, installed profile hash, available die flash, and temperatures.
+Closing the history view blinks it again. The aggregate has a separate `CLEAR`
+action that does not erase history. Server-sent events notify the page of model
+changes, with periodic HTTP refresh as a fallback. The Wi-Fi form can
+additionally connect the device to an existing network while leaving the access
+point available.
 
 The touchscreen firmware defaults Wi-Fi off. Its pairing/settings page can
 enable or disable Wi-Fi, and the saved choice persists across reboots. The

@@ -119,16 +119,21 @@ void DiceModel::Ingest(const pixels::Advertisement &advertisement,
   const int die_index = FindDie(advertisement.pixel_id);
   if (die_index >= 0) {
     Die &die = dice_[die_index];
+    const std::size_t index = static_cast<std::size_t>(die_index);
     const bool completed_roll =
         advertisement.roll_state == pixels::RollState::kRolled &&
-        die.last_seen_ms != 0 &&
-        die.roll_state != pixels::RollState::kRolled;
-    if (ApplyAdvertisement(&die, advertisement, now_ms)) {
-      if (completed_roll) {
-        AddRollEvent(static_cast<std::size_t>(die_index), now_ms);
-      }
+        has_advertised_roll_state_[index] &&
+        advertised_roll_state_[index] != pixels::RollState::kRolled;
+    bool changed = ApplyAdvertisement(&die, advertisement, now_ms);
+    if (completed_roll) {
+      AddRollEvent(index, now_ms);
+      changed = true;
+    }
+    if (changed) {
       ++revision_;
     }
+    advertised_roll_state_[index] = advertisement.roll_state;
+    has_advertised_roll_state_[index] = true;
     return;
   }
 
@@ -167,6 +172,8 @@ bool DiceModel::Pair(uint32_t pixel_id) {
   die_history_[dice_count_] = {};
   die_history_count_[dice_count_] = 0;
   die_history_next_[dice_count_] = 0;
+  advertised_roll_state_[dice_count_] = dice_[dice_count_].roll_state;
+  has_advertised_roll_state_[dice_count_] = true;
   ++dice_count_;
   for (std::size_t i = candidate_index + 1; i < candidate_count_; ++i) {
     candidates_[i - 1] = candidates_[i];
@@ -187,12 +194,16 @@ bool DiceModel::Unpair(uint32_t pixel_id) {
     die_history_[i - 1] = die_history_[i];
     die_history_count_[i - 1] = die_history_count_[i];
     die_history_next_[i - 1] = die_history_next_[i];
+    advertised_roll_state_[i - 1] = advertised_roll_state_[i];
+    has_advertised_roll_state_[i - 1] = has_advertised_roll_state_[i];
   }
   --dice_count_;
   dice_[dice_count_] = {};
   die_history_[dice_count_] = {};
   die_history_count_[dice_count_] = 0;
   die_history_next_[dice_count_] = 0;
+  advertised_roll_state_[dice_count_] = pixels::RollState::kUnknown;
+  has_advertised_roll_state_[dice_count_] = false;
   ++revision_;
   return true;
 }
@@ -207,6 +218,8 @@ void DiceModel::RestorePaired(const uint32_t *pixel_ids, std::size_t count) {
   die_history_ = {};
   die_history_count_ = {};
   die_history_next_ = {};
+  advertised_roll_state_ = {};
+  has_advertised_roll_state_ = {};
   ++revision_;
 }
 
@@ -243,6 +256,58 @@ void DiceModel::RestoreAggregate(AggregateMode mode) {
   }
   aggregate_mode_ = mode;
   ++revision_;
+}
+
+void DiceModel::UpdateConnectedInfo(const ConnectedDieInfo &info,
+                                    uint64_t now_ms) {
+  Lock lock(mutex_);
+  const int die_index = FindDie(info.pixel_id);
+  if (die_index < 0) {
+    return;
+  }
+  Die &die = dice_[die_index];
+  die.firmware_timestamp = info.firmware_timestamp;
+  die.firmware_version = info.firmware_version;
+  die.profile_hash = info.profile_hash;
+  die.available_flash = info.available_flash;
+  die.type = info.type;
+  die.colorway = info.colorway;
+  die.roll_state = info.roll_state;
+  die.battery = info.battery;
+  die.battery_state = info.battery_state;
+  die.charging = info.battery_state >= 2 && info.battery_state <= 4;
+  die.last_seen_ms = now_ms;
+  die.has_connected_info = true;
+  if (info.has_name) {
+    std::strncpy(die.name, info.name, sizeof(die.name) - 1);
+    die.name[sizeof(die.name) - 1] = '\0';
+  }
+  if (info.roll_state == pixels::RollState::kRolled) {
+    die.last_roll =
+        pixels::FaceValue(info.type, info.face_index, info.firmware_timestamp);
+    die.has_roll = true;
+  }
+  ++revision_;
+}
+
+void DiceModel::UpdateTemperature(uint32_t pixel_id,
+                                  int16_t mcu_temperature_centi_c,
+                                  int16_t battery_temperature_centi_c) {
+  Lock lock(mutex_);
+  const int die_index = FindDie(pixel_id);
+  if (die_index < 0) {
+    return;
+  }
+  Die &die = dice_[die_index];
+  die.mcu_temperature_centi_c = mcu_temperature_centi_c;
+  die.battery_temperature_centi_c = battery_temperature_centi_c;
+  die.has_temperature = true;
+  ++revision_;
+}
+
+uint32_t DiceModel::Revision() const {
+  Lock lock(mutex_);
+  return revision_;
 }
 
 Snapshot DiceModel::GetSnapshot(uint64_t now_ms) const {
