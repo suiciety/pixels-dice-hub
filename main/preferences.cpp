@@ -16,7 +16,9 @@ void RestorePreferences(DiceModel *model) {
   uint32_t ids[kMaxDice] = {};
   std::size_t size = sizeof(ids);
   if (nvs_get_blob(handle, "paired_ids", ids, &size) == ESP_OK) {
-    model->RestorePaired(ids, size / sizeof(uint32_t));
+    model->RestorePaired(
+        ids, size / sizeof(uint32_t),
+        static_cast<uint64_t>(esp_timer_get_time() / 1000));
   }
   uint8_t aggregate = 0;
   if (nvs_get_u8(handle, "aggregate", &aggregate) == ESP_OK &&

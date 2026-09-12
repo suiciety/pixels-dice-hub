@@ -129,11 +129,11 @@ const found=s.candidates.map(d=>`<div class="row"><div class="grow"><b>${esc(d.t
 document.querySelector('#pairing').innerHTML=[...paired,...found].join('')||'<div class="empty">No Pixels discovered yet</div>';
 document.querySelector('#history').innerHTML=s.history.map(h=>`<div class="row"><div class="grow"><b>${esc(h.type)} ${esc(h.name||('Pixel '+h.id))}</b><div class="muted">${Math.floor(h.ageMs/1000)}s ago</div></div><div class="history-value">${h.value}</div></div>`).join('')||'<div class="empty">No completed rolls yet</div>';
 }catch(e){document.querySelector('#status').textContent='Reconnecting...'}finally{refreshing=false}}
-function scheduleFallback(){clearTimeout(refreshTimer);refreshTimer=setTimeout(async()=>{await refresh();scheduleFallback()},eventsConnected?15000:2000)}
+function scheduleFallback(){clearTimeout(refreshTimer);refreshTimer=setTimeout(async()=>{await refresh();scheduleFallback()},eventsConnected?15000:750)}
 if(window.EventSource){const events=new EventSource('/api/events');
 events.onopen=()=>{eventsConnected=true;scheduleFallback()};
 events.addEventListener('state',()=>refresh());
-events.onerror=()=>{eventsConnected=false;scheduleFallback()}}
+events.onerror=()=>{eventsConnected=false;refresh();scheduleFallback()}}
 document.querySelector('#wifi').addEventListener('submit',async e=>{e.preventDefault();const b=new URLSearchParams(new FormData(e.target));
 const r=await fetch('/api/wifi',{method:'POST',body:b});alert(await r.text());e.target.reset()});
 refresh();scheduleFallback();

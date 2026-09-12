@@ -7,6 +7,8 @@
 namespace app {
 namespace {
 
+constexpr uint64_t kRestoreGraceMs = 15000;
+
 class Lock {
 public:
   explicit Lock(SemaphoreHandle_t mutex) : mutex_(mutex) {
@@ -120,10 +122,14 @@ void DiceModel::Ingest(const pixels::Advertisement &advertisement,
   if (die_index >= 0) {
     Die &die = dice_[die_index];
     const std::size_t index = static_cast<std::size_t>(die_index);
+    const bool first_observation_after_restore =
+        !has_advertised_roll_state_[index] &&
+        restore_grace_until_ms_ != 0 && now_ms >= restore_grace_until_ms_;
     const bool completed_roll =
         advertisement.roll_state == pixels::RollState::kRolled &&
-        has_advertised_roll_state_[index] &&
-        advertised_roll_state_[index] != pixels::RollState::kRolled;
+        ((has_advertised_roll_state_[index] &&
+          advertised_roll_state_[index] != pixels::RollState::kRolled) ||
+         first_observation_after_restore);
     bool changed = ApplyAdvertisement(&die, advertisement, now_ms);
     if (completed_roll) {
       AddRollEvent(index, now_ms);
@@ -208,7 +214,8 @@ bool DiceModel::Unpair(uint32_t pixel_id) {
   return true;
 }
 
-void DiceModel::RestorePaired(const uint32_t *pixel_ids, std::size_t count) {
+void DiceModel::RestorePaired(const uint32_t *pixel_ids, std::size_t count,
+                              uint64_t now_ms) {
   Lock lock(mutex_);
   dice_count_ = std::min(count, dice_.size());
   for (std::size_t i = 0; i < dice_count_; ++i) {
@@ -220,6 +227,7 @@ void DiceModel::RestorePaired(const uint32_t *pixel_ids, std::size_t count) {
   die_history_next_ = {};
   advertised_roll_state_ = {};
   has_advertised_roll_state_ = {};
+  restore_grace_until_ms_ = now_ms + kRestoreGraceMs;
   ++revision_;
 }
 

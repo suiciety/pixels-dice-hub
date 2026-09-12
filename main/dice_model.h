@@ -90,7 +90,8 @@ public:
   void Ingest(const pixels::Advertisement &advertisement, uint64_t now_ms);
   bool Pair(uint32_t pixel_id);
   bool Unpair(uint32_t pixel_id);
-  void RestorePaired(const uint32_t *pixel_ids, std::size_t count);
+  void RestorePaired(const uint32_t *pixel_ids, std::size_t count,
+                     uint64_t now_ms);
   std::size_t PairedIds(uint32_t *pixel_ids, std::size_t capacity) const;
   void CycleAggregate();
   void ClearAggregate();
@@ -130,6 +131,7 @@ private:
   int aggregate_low_ = 0;
   uint32_t aggregate_roll_count_ = 0;
   uint32_t revision_ = 1;
+  uint64_t restore_grace_until_ms_ = 0;
 };
 
 } // namespace app
