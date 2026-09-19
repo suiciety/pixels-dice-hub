@@ -58,7 +58,13 @@ button{border:0;background:#334155;color:var(--text);padding:9px 12px;cursor:poi
 .die.crooked{border-color:#ef4444;box-shadow:0 0 14px #ef444466}.die.rolled{border-color:#22c55e}
 .die.rolling .die-state{color:#38bdf8}.die.handling .die-state{color:#f59e0b}.die.crooked .die-state{color:#f87171}
 .die.rolled .die-state{color:#4ade80}.die-state{font-size:12px;font-weight:700;color:#94a3b8}
-.roll{font-size:52px;font-weight:700;text-align:center;line-height:1.25}
+.die.rolling .roll,.die.handling .roll{color:#334155}
+.battery{position:relative;display:inline-block;width:22px;height:11px;border:1px solid var(--muted);border-radius:3px;padding:1px}
+.battery::after{content:"";position:absolute;right:-4px;top:2px;width:2px;height:5px;background:var(--muted);border-radius:0 1px 1px 0}
+.battery i{display:block;height:100%;background:var(--muted);border-radius:1px}.battery.low i{background:#f87171}
+.battery.charging i{background:#4ade80}
+.roll{font-size:52px;font-weight:700;text-align:center;line-height:1.25;text-shadow:
+-1px -1px #000,1px -1px #000,-1px 1px #000,1px 1px #000}
 .aggregate-row{display:grid;grid-template-columns:1fr auto;gap:8px}.aggregate{background:var(--accent);display:flex;
 align-items:center;justify-content:space-between;min-height:84px;width:100%}.aggregate strong{font-size:44px}
 .clear{background:#991b1b;min-width:76px;font-weight:700}.mode-detail{display:flex;flex-direction:column;align-items:flex-start}
@@ -101,7 +107,7 @@ async function action(op,id){await fetch('/api/action?op='+op+(id?'&id='+id:''),
 function blink(id){if(id)fetch('/api/action?op=blink&id='+id,{method:'POST'})}
 function inspect(id){if(id)fetch('/api/action?op=info&id='+id,{method:'POST'})}
 function dieCard(d,i){const stateClass=d.state.toLowerCase().replaceAll(' ','-');return `<article class="card die ${stateClass} ${d.offline?'offline':''}" style="--die:${colors[i%colors.length]}" onclick="showDieHistory('${d.id}')">
-<div class="die-head"><b>${esc(d.type)}</b><span class="muted">${d.offline?'OFF':d.battery+'%'}</span></div>
+<div class="die-head"><b>${esc(d.type)}</b><span class="battery ${d.battery<15?'low':''} ${d.charging?'charging':''}" title="${d.battery}%"><i style="width:${Math.max(0,Math.min(100,d.battery))}%"></i></span></div>
 <div class="roll">${d.hasRoll?d.roll:'-'}</div><div class="die-head"><span class="muted">${esc(d.name||('Pixel '+d.id))}</span>
 <span class="die-state">${d.offline?'OFFLINE':esc(d.state)}</span></div></article>`}
 let refreshTimer,refreshing=false,currentDice=[],selectedDieId='',eventsConnected=false;
@@ -200,7 +206,7 @@ void SendJsonString(httpd_req_t *request, const char *value) {
 void SendDie(httpd_req_t *request, const Die &die, uint64_t now_ms) {
   char buffer[512];
   const bool offline =
-      die.last_seen_ms == 0 || now_ms - die.last_seen_ms > 15000;
+      die.last_seen_ms == 0 || now_ms - die.last_seen_ms > kDieOfflineMs;
   std::snprintf(buffer, sizeof(buffer),
                 "{\"id\":\"%08lx\",\"type\":\"%s\",\"name\":",
                 static_cast<unsigned long>(die.pixel_id),

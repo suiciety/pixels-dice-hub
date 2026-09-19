@@ -20,8 +20,8 @@ constexpr uint32_t kBackground = 0x0b1020;
 constexpr uint32_t kPanel = 0x172033;
 constexpr uint32_t kText = 0xf8fafc;
 constexpr uint32_t kMuted = 0x94a3b8;
+constexpr uint32_t kDimmed = 0x334155;
 constexpr uint32_t kAccent = 0x2563eb;
-constexpr uint32_t kStaleMs = 15000;
 constexpr char kTag[] = "pixels_ui";
 
 board::Hardware *hardware;
@@ -36,13 +36,19 @@ lv_obj_t *count_label;
 lv_obj_t *network_status_label;
 lv_obj_t *pair_page;
 lv_obj_t *history_page;
-lv_obj_t *history_status_label;
+lv_obj_t *stats_page;
+lv_obj_t *stats_status_label;
 uint32_t history_pixel_id;
 std::size_t rendered_history_count;
 uint64_t rendered_history_timestamp;
 uint32_t rendered_revision;
 uint64_t last_dashboard_refresh_ms;
+uint64_t pair_page_opened_ms;
+uint64_t rendered_pairing_signature;
+NetworkStatus rendered_pairing_network_status = NetworkStatus::kOff;
 board::Orientation orientation = board::Orientation::kPortrait;
+
+void OpenStats(lv_event_t *event);
 
 lv_color_t Color(uint32_t value) { return lv_color_hex(value); }
 
@@ -117,6 +123,11 @@ uint32_t StateBackground(pixels::RollState state) {
 }
 
 void ClosePairing(lv_event_t *) {
+  const uint64_t now_ms =
+      static_cast<uint64_t>(esp_timer_get_time() / 1000);
+  if (now_ms - pair_page_opened_ms < 300) {
+    return;
+  }
   lv_obj_add_flag(pair_page, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -142,11 +153,6 @@ void PairAction(lv_event_t *event) {
   rendered_revision = 0;
 }
 
-void OpenPairing(lv_event_t *) {
-  lv_obj_remove_flag(pair_page, LV_OBJ_FLAG_HIDDEN);
-  rendered_revision = 0;
-}
-
 lv_obj_t *MakeLabel(lv_obj_t *parent, const char *text, const lv_font_t *font,
                     uint32_t color) {
   lv_obj_t *label = lv_label_create(parent);
@@ -164,47 +170,124 @@ void StyleCard(lv_obj_t *object, uint32_t border) {
   lv_obj_set_style_pad_all(object, 6, 0);
 }
 
+void StylePage(lv_obj_t *page) {
+  lv_obj_set_size(page, lv_pct(100), lv_pct(100));
+  lv_obj_set_style_bg_color(page, Color(kBackground), 0);
+  lv_obj_set_style_border_width(page, 0, 0);
+  lv_obj_set_style_radius(page, 0, 0);
+  lv_obj_set_style_pad_all(page, 8, 0);
+  lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+void MakeBatteryIndicator(lv_obj_t *parent, const Die &die, bool stale) {
+  const uint32_t color = stale       ? 0x64748b
+                         : die.charging ? 0x4ade80
+                         : die.battery < 15 ? 0xf87171
+                                            : kMuted;
+  lv_obj_t *body = lv_obj_create(parent);
+  lv_obj_set_size(body, 18, 10);
+  lv_obj_align(body, LV_ALIGN_TOP_RIGHT, -4, 0);
+  lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(body, 1, 0);
+  lv_obj_set_style_border_color(body, Color(color), 0);
+  lv_obj_set_style_radius(body, 2, 0);
+  lv_obj_set_style_pad_all(body, 0, 0);
+  lv_obj_remove_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(body, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t *fill = lv_obj_create(body);
+  const int fill_width = (14 * die.battery + 99) / 100;
+  lv_obj_set_size(fill, std::max(fill_width, 1), 6);
+  lv_obj_align(fill, LV_ALIGN_LEFT_MID, 1, 0);
+  lv_obj_set_style_bg_color(fill, Color(color), 0);
+  lv_obj_set_style_bg_opa(fill, die.battery == 0 ? LV_OPA_TRANSP : LV_OPA_COVER,
+                         0);
+  lv_obj_set_style_border_width(fill, 0, 0);
+  lv_obj_set_style_radius(fill, 1, 0);
+  lv_obj_set_style_pad_all(fill, 0, 0);
+  lv_obj_remove_flag(fill, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(fill, LV_OBJ_FLAG_CLICKABLE);
+
+  lv_obj_t *terminal = lv_obj_create(parent);
+  lv_obj_set_size(terminal, 3, 6);
+  lv_obj_align(terminal, LV_ALIGN_TOP_RIGHT, 0, 2);
+  lv_obj_set_style_bg_color(terminal, Color(color), 0);
+  lv_obj_set_style_border_width(terminal, 0, 0);
+  lv_obj_set_style_radius(terminal, 1, 0);
+  lv_obj_set_style_pad_all(terminal, 0, 0);
+  lv_obj_remove_flag(terminal, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(terminal, LV_OBJ_FLAG_CLICKABLE);
+}
+
 void CloseHistory(lv_event_t *) {
   BlinkDie(history_pixel_id);
+  lv_obj_add_flag(stats_page, LV_OBJ_FLAG_HIDDEN);
   history_pixel_id = 0;
   rendered_history_count = 0;
   rendered_history_timestamp = 0;
   lv_obj_add_flag(history_page, LV_OBJ_FLAG_HIDDEN);
 }
 
-void UpdateHistoryStatus(const Die *die) {
-  if (history_status_label == nullptr) {
+void CloseStats(lv_event_t *) {
+  lv_obj_add_flag(stats_page, LV_OBJ_FLAG_HIDDEN);
+}
+
+void UnpairFromStats(lv_event_t *) {
+  if (history_pixel_id != 0 && model->Unpair(history_pixel_id)) {
+    SavePreferences(*model);
+  }
+  history_pixel_id = 0;
+  rendered_history_count = 0;
+  rendered_history_timestamp = 0;
+  rendered_revision = 0;
+  lv_obj_add_flag(stats_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(history_page, LV_OBJ_FLAG_HIDDEN);
+}
+
+void UpdateStatsStatus(const Die *die) {
+  if (stats_status_label == nullptr) {
     return;
   }
   if (die == nullptr) {
-    lv_label_set_text(history_status_label, "WAITING FOR DIE STATUS");
+    lv_label_set_text(stats_status_label, "DIE NOT AVAILABLE");
     return;
   }
-  char status[160];
+  char status[224];
   if (die->has_connected_info && die->has_temperature) {
     std::snprintf(
         status, sizeof(status),
-        "%u%% %s  %s  %ddBm\nFW %u  SET %08lx\nMCU %.1fC  BAT %.1fC",
+        "ID %08lx\nBATTERY %u%%  %s\nSTATE %s\nSIGNAL %ddBm\n"
+        "FIRMWARE %u\nPROFILE %08lx\nFLASH %lu bytes\n"
+        "MCU %.1fC  BAT %.1fC",
+        static_cast<unsigned long>(die->pixel_id),
         die->battery, die->charging ? "YES" : "NO",
         pixels::RollStateName(die->roll_state), die->rssi,
         die->firmware_version,
         static_cast<unsigned long>(die->profile_hash),
+        static_cast<unsigned long>(die->available_flash),
         die->mcu_temperature_centi_c / 100.0,
         die->battery_temperature_centi_c / 100.0);
   } else if (die->has_connected_info) {
-    std::snprintf(status, sizeof(status),
-                  "%u%% %s  %s  %ddBm\nFW %u  SET %08lx",
+    std::snprintf(
+        status, sizeof(status),
+        "ID %08lx\nBATTERY %u%%  %s\nSTATE %s\nSIGNAL %ddBm\n"
+        "FIRMWARE %u\nPROFILE %08lx\nFLASH %lu bytes",
+                  static_cast<unsigned long>(die->pixel_id),
                   die->battery, die->charging ? "YES" : "NO",
                   pixels::RollStateName(die->roll_state), die->rssi,
                   die->firmware_version,
-                  static_cast<unsigned long>(die->profile_hash));
+                  static_cast<unsigned long>(die->profile_hash),
+                  static_cast<unsigned long>(die->available_flash));
   } else {
-    std::snprintf(status, sizeof(status),
-                  "BAT %u%%  CHARGING %s\n%s  RSSI %ddBm\nREFRESHING DETAILS",
+    std::snprintf(
+        status, sizeof(status),
+        "ID %08lx\nBATTERY %u%%  %s\nSTATE %s\nSIGNAL %ddBm\n"
+        "REFRESHING DETAILS",
+                  static_cast<unsigned long>(die->pixel_id),
                   die->battery, die->charging ? "YES" : "NO",
                   pixels::RollStateName(die->roll_state), die->rssi);
   }
-  lv_label_set_text(history_status_label, status);
+  lv_label_set_text(stats_status_label, status);
 }
 
 void BuildHistory(uint32_t pixel_id, uint64_t now_ms) {
@@ -221,45 +304,42 @@ void BuildHistory(uint32_t pixel_id, uint64_t now_ms) {
   rendered_history_timestamp =
       history.count == 0 ? 0 : history.events[0].timestamp_ms;
 
-  history_status_label = nullptr;
   lv_obj_clean(history_page);
-  lv_obj_set_size(history_page, lv_pct(100), lv_pct(100));
-  lv_obj_set_style_bg_color(history_page, Color(kBackground), 0);
-  lv_obj_set_style_pad_all(history_page, 8, 0);
+  StylePage(history_page);
 
-  char heading[48] = "DIE HISTORY";
+  char heading[32] = "ROLLS";
   if (selected != nullptr) {
-    std::snprintf(heading, sizeof(heading), "%s %s",
-                  pixels::DieTypeName(selected->type),
-                  selected->name[0] == '\0' ? "Pixel" : selected->name);
+    std::snprintf(heading, sizeof(heading), "%s ROLLS",
+                  pixels::DieTypeName(selected->type));
   }
   lv_obj_t *title =
-      MakeLabel(history_page, heading, &lv_font_montserrat_14, kText);
+      MakeLabel(history_page, heading, &lv_font_montserrat_12, kText);
   lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 2);
-  lv_obj_set_width(title, std::max(lv_obj_get_width(history_page) - 70, 70L));
+  lv_obj_set_width(title, std::max(lv_obj_get_width(history_page) - 106, 48L));
   lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
 
   lv_obj_t *done = lv_button_create(history_page);
-  lv_obj_set_size(done, 54, 30);
+  lv_obj_set_size(done, 46, 30);
   lv_obj_align(done, LV_ALIGN_TOP_RIGHT, 0, -2);
   lv_obj_set_style_bg_color(done, Color(kAccent), 0);
   lv_obj_add_event_cb(done, CloseHistory, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *done_label = MakeLabel(done, "BACK", &lv_font_montserrat_12, kText);
   lv_obj_center(done_label);
 
-  history_status_label =
-      MakeLabel(history_page, "", &lv_font_montserrat_12, kMuted);
-  lv_obj_set_pos(history_status_label, 2, 24);
-  lv_obj_set_width(history_status_label,
-                   std::max(lv_obj_get_width(history_page) - 16, 80L));
-  lv_label_set_long_mode(history_status_label, LV_LABEL_LONG_WRAP);
-  UpdateHistoryStatus(selected);
+  lv_obj_t *info = lv_button_create(history_page);
+  lv_obj_set_size(info, 46, 30);
+  lv_obj_align(info, LV_ALIGN_TOP_RIGHT, -50, -2);
+  lv_obj_set_style_bg_color(info, Color(0x334155), 0);
+  lv_obj_add_event_cb(info, OpenStats, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *info_label =
+      MakeLabel(info, "INFO", &lv_font_montserrat_12, kText);
+  lv_obj_center(info_label);
 
   lv_obj_t *list = lv_obj_create(history_page);
   lv_obj_set_size(list, lv_pct(100),
-                  std::max<lv_coord_t>(lv_obj_get_height(history_page) - 84,
+                  std::max<lv_coord_t>(lv_obj_get_height(history_page) - 44,
                                        60));
-  lv_obj_set_pos(list, 0, 78);
+  lv_obj_set_pos(list, 0, 38);
   lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(list, 0, 0);
   lv_obj_set_style_pad_all(list, 0, 0);
@@ -304,11 +384,73 @@ void BuildHistory(uint32_t pixel_id, uint64_t now_ms) {
   }
 }
 
+void BuildStats(uint32_t pixel_id, uint64_t now_ms) {
+  const Snapshot snapshot = model->GetSnapshot(now_ms);
+  const Die *selected = nullptr;
+  for (std::size_t i = 0; i < snapshot.dice_count; ++i) {
+    if (snapshot.dice[i].pixel_id == pixel_id) {
+      selected = &snapshot.dice[i];
+      break;
+    }
+  }
+
+  stats_status_label = nullptr;
+  lv_obj_clean(stats_page);
+  StylePage(stats_page);
+
+  lv_obj_t *title =
+      MakeLabel(stats_page, "DIE INFO", &lv_font_montserrat_14, kText);
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 2);
+
+  lv_obj_t *back = lv_button_create(stats_page);
+  lv_obj_set_size(back, 54, 30);
+  lv_obj_align(back, LV_ALIGN_TOP_RIGHT, 0, -2);
+  lv_obj_set_style_bg_color(back, Color(kAccent), 0);
+  lv_obj_add_event_cb(back, CloseStats, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *back_label =
+      MakeLabel(back, "BACK", &lv_font_montserrat_12, kText);
+  lv_obj_center(back_label);
+
+  lv_obj_t *details = lv_obj_create(stats_page);
+  lv_obj_set_size(details, lv_pct(100),
+                  std::max<lv_coord_t>(lv_obj_get_height(stats_page) - 86,
+                                       50));
+  lv_obj_set_pos(details, 0, 38);
+  lv_obj_set_style_bg_opa(details, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(details, 0, 0);
+  lv_obj_set_style_pad_all(details, 2, 0);
+
+  stats_status_label =
+      MakeLabel(details, "", &lv_font_montserrat_12, kMuted);
+  lv_obj_set_width(stats_status_label, lv_pct(100));
+  lv_label_set_long_mode(stats_status_label, LV_LABEL_LONG_WRAP);
+  UpdateStatsStatus(selected);
+
+  lv_obj_t *unpair = lv_button_create(stats_page);
+  lv_obj_set_size(unpair, lv_pct(100), 36);
+  lv_obj_align(unpair, LV_ALIGN_BOTTOM_MID, 0, 0);
+  lv_obj_set_style_bg_color(unpair, Color(0x991b1b), 0);
+  lv_obj_add_event_cb(unpair, UnpairFromStats, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *unpair_label =
+      MakeLabel(unpair, "UNPAIR DIE", &lv_font_montserrat_12, kText);
+  lv_obj_center(unpair_label);
+}
+
+void OpenStats(lv_event_t *) {
+  if (history_pixel_id == 0) {
+    return;
+  }
+  RefreshDieInfo(history_pixel_id);
+  BuildStats(history_pixel_id,
+             static_cast<uint64_t>(esp_timer_get_time() / 1000));
+  lv_obj_remove_flag(stats_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(stats_page);
+}
+
 void OpenHistory(lv_event_t *event) {
   history_pixel_id = static_cast<uint32_t>(
       reinterpret_cast<uintptr_t>(lv_event_get_user_data(event)));
   BlinkDie(history_pixel_id);
-  RefreshDieInfo(history_pixel_id);
   BuildHistory(
       history_pixel_id,
       static_cast<uint64_t>(esp_timer_get_time() / 1000));
@@ -316,7 +458,27 @@ void OpenHistory(lv_event_t *event) {
   lv_obj_move_foreground(history_page);
 }
 
+uint64_t PairingSignature(const Snapshot &snapshot) {
+  uint64_t signature = 1469598103934665603ULL;
+  auto mix = [&signature](uint32_t value) {
+    signature ^= value;
+    signature *= 1099511628211ULL;
+  };
+  mix(static_cast<uint32_t>(snapshot.dice_count));
+  for (std::size_t i = 0; i < snapshot.dice_count; ++i) {
+    mix(snapshot.dice[i].pixel_id);
+  }
+  mix(0xffffffffU);
+  mix(static_cast<uint32_t>(snapshot.candidate_count));
+  for (std::size_t i = 0; i < snapshot.candidate_count; ++i) {
+    mix(snapshot.candidates[i].pixel_id);
+  }
+  return signature;
+}
+
 void BuildPairing(const Snapshot &snapshot) {
+  rendered_pairing_signature = PairingSignature(snapshot);
+  rendered_pairing_network_status = GetWebNetworkStatus();
   lv_obj_clean(pair_page);
   lv_obj_set_style_bg_color(pair_page, Color(kBackground), 0);
   lv_obj_set_style_pad_all(pair_page, 8, 0);
@@ -332,7 +494,7 @@ void BuildPairing(const Snapshot &snapshot) {
   lv_obj_t *done_label = MakeLabel(done, "DONE", &lv_font_montserrat_12, kText);
   lv_obj_center(done_label);
 
-  const NetworkStatus network_status = GetWebNetworkStatus();
+  const NetworkStatus network_status = rendered_pairing_network_status;
   const bool network_enabled = network_status != NetworkStatus::kOff;
   lv_obj_t *wifi = lv_button_create(pair_page);
   lv_obj_set_size(wifi, lv_pct(100), 30);
@@ -372,9 +534,8 @@ void BuildPairing(const Snapshot &snapshot) {
     lv_obj_t *name = MakeLabel(row, heading, &lv_font_montserrat_12, kText);
     lv_obj_align(name, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    char detail[40];
-    std::snprintf(detail, sizeof(detail), "%08lx  %ddBm",
-                  static_cast<unsigned long>(die.pixel_id), die.rssi);
+    char detail[24];
+    std::snprintf(detail, sizeof(detail), "SIGNAL %ddBm", die.rssi);
     lv_obj_t *info = MakeLabel(row, detail, &lv_font_montserrat_12, kMuted);
     lv_obj_align(info, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
@@ -396,6 +557,16 @@ void BuildPairing(const Snapshot &snapshot) {
   for (std::size_t i = 0; i < snapshot.candidate_count; ++i) {
     add_row(snapshot.candidates[i], false);
   }
+}
+
+void OpenPairing(lv_event_t *) {
+  const uint64_t now_ms =
+      static_cast<uint64_t>(esp_timer_get_time() / 1000);
+  const Snapshot snapshot = model->GetSnapshot(now_ms);
+  BuildPairing(snapshot);
+  pair_page_opened_ms = now_ms;
+  lv_obj_remove_flag(pair_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(pair_page);
 }
 
 void TileGeometry(std::size_t count, bool landscape, int *columns, int *rows) {
@@ -434,11 +605,13 @@ void BuildDashboard(const Snapshot &snapshot, uint64_t now_ms) {
     lv_obj_t *empty = lv_obj_create(content);
     lv_obj_set_size(empty, tile_width, tile_height);
     StyleCard(empty, 0x334155);
+    lv_obj_add_flag(empty, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(empty, OpenPairing, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *title =
         MakeLabel(empty, "NO DICE", &lv_font_montserrat_24, kText);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -18);
     lv_obj_t *hint =
-        MakeLabel(empty, "Tap + to pair", &lv_font_montserrat_14, kMuted);
+        MakeLabel(empty, "TAP TO PAIR", &lv_font_montserrat_14, kMuted);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 18);
     return;
   }
@@ -458,7 +631,7 @@ void BuildDashboard(const Snapshot &snapshot, uint64_t now_ms) {
         tile, OpenHistory, LV_EVENT_CLICKED,
         reinterpret_cast<void *>(static_cast<uintptr_t>(die.pixel_id)));
     const bool stale =
-        die.last_seen_ms == 0 || now_ms - die.last_seen_ms > kStaleMs;
+        die.last_seen_ms == 0 || now_ms - die.last_seen_ms > kDieOfflineMs;
     const uint32_t state_color = StateColor(die.roll_state);
     StyleCard(tile, stale ? 0x64748b : state_color);
     if (!stale) {
@@ -474,27 +647,35 @@ void BuildDashboard(const Snapshot &snapshot, uint64_t now_ms) {
         MakeLabel(tile, pixels::DieTypeName(die.type), &lv_font_montserrat_14,
                   stale ? kMuted : accents[i]);
     lv_obj_align(type, LV_ALIGN_TOP_LEFT, 0, 0);
-    char battery[10];
-    std::snprintf(battery, sizeof(battery), stale ? "OFF" : "%u%%",
-                  die.battery);
-    lv_obj_t *battery_label = MakeLabel(tile, battery, &lv_font_montserrat_12,
-                                        die.battery < 15 ? 0xf87171 : kMuted);
-    lv_obj_align(battery_label, LV_ALIGN_TOP_RIGHT, 0, 0);
+    MakeBatteryIndicator(tile, die, stale);
 
     char value[8] = "-";
     if (die.has_roll) {
       std::snprintf(value, sizeof(value), "%d", die.last_roll);
     }
-    const lv_font_t *value_font = tile_height >= 90   ? &lv_font_montserrat_48
-                                  : tile_height >= 60 ? &lv_font_montserrat_32
-                                                      : &lv_font_montserrat_24;
-    lv_obj_t *roll = MakeLabel(tile, value, value_font, kText);
-    lv_obj_align(roll, LV_ALIGN_CENTER, 0, tile_height >= 90 ? 2 : -1);
-    lv_obj_t *state =
-        MakeLabel(tile, stale ? "OFFLINE"
-                              : pixels::RollStateName(die.roll_state),
-                  &lv_font_montserrat_12, stale ? kMuted : state_color);
-    lv_obj_align(state, LV_ALIGN_BOTTOM_MID, 0, 0);
+    const lv_font_t *value_font =
+        tile_height >= 72 && tile_width >= 72 ? &lv_font_montserrat_48
+                                              : &lv_font_montserrat_32;
+    const bool awaiting_roll =
+        die.roll_state == pixels::RollState::kHandling ||
+        die.roll_state == pixels::RollState::kRolling;
+    lv_obj_t *roll =
+        MakeLabel(tile, value, value_font, awaiting_roll ? kDimmed : kText);
+    lv_obj_set_style_text_outline_stroke_color(roll, Color(kBackground), 0);
+    lv_obj_set_style_text_outline_stroke_width(roll, 1, 0);
+    lv_obj_set_style_text_outline_stroke_opa(roll, LV_OPA_COVER, 0);
+    lv_obj_align(roll, LV_ALIGN_CENTER, 0, 4);
+
+    lv_obj_t *state_ring = lv_obj_create(tile);
+    lv_obj_set_size(state_ring, 12, 12);
+    lv_obj_set_style_radius(state_ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(state_ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(state_ring, 3, 0);
+    lv_obj_set_style_border_color(
+        state_ring, Color(stale ? 0x64748b : state_color), 0);
+    lv_obj_set_style_pad_all(state_ring, 0, 0);
+    lv_obj_remove_flag(state_ring, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(state_ring, LV_ALIGN_BOTTOM_LEFT, 0, 0);
   }
 
   const char *mode = snapshot.aggregate_mode == AggregateMode::kSum ? "SUM"
@@ -519,7 +700,7 @@ void Relayout() {
   const int width = landscape ? 320 : 172;
   const int height = landscape ? 172 : 320;
   const int header_height = 26;
-  const int aggregate_size = landscape ? 78 : 56;
+  const int aggregate_size = landscape ? 78 : 66;
 
   lv_obj_set_size(root, width, height);
   if (landscape) {
@@ -528,6 +709,7 @@ void Relayout() {
     lv_obj_set_pos(content, 6, header_height);
     lv_obj_set_size(aggregate, aggregate_size - 6, height - header_height - 8);
     lv_obj_set_pos(aggregate, width - aggregate_size, header_height);
+    lv_obj_set_size(aggregate_clear, 52, 22);
     lv_obj_align(aggregate_mode, LV_ALIGN_TOP_MID, 0, 0);
     lv_obj_align(aggregate_value, LV_ALIGN_CENTER, 0, 0);
     lv_obj_align(aggregate_clear, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -537,9 +719,10 @@ void Relayout() {
     lv_obj_set_pos(content, 8, header_height);
     lv_obj_set_size(aggregate, width - 16, aggregate_size - 4);
     lv_obj_set_pos(aggregate, 8, height - aggregate_size);
-    lv_obj_align(aggregate_mode, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_align(aggregate_value, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_align(aggregate_clear, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_size(aggregate_clear, 42, 48);
+    lv_obj_align(aggregate_mode, LV_ALIGN_TOP_LEFT, 2, 0);
+    lv_obj_align(aggregate_value, LV_ALIGN_BOTTOM_LEFT, 4, 2);
+    lv_obj_align(aggregate_clear, LV_ALIGN_RIGHT_MID, 0, 0);
   }
   rendered_revision = 0;
 }
@@ -564,24 +747,19 @@ void UiTimer(lv_timer_t *) {
                             : kMuted),
       0);
   const Snapshot snapshot = model->GetSnapshot(now_ms);
+  const bool model_changed = snapshot.revision != rendered_revision;
   const bool periodic_refresh = now_ms - last_dashboard_refresh_ms >= 1000;
-  if (snapshot.revision != rendered_revision || periodic_refresh) {
+  if (model_changed || periodic_refresh) {
     BuildDashboard(snapshot, now_ms);
-    if (!lv_obj_has_flag(pair_page, LV_OBJ_FLAG_HIDDEN)) {
-      BuildPairing(snapshot);
-    }
     rendered_revision = snapshot.revision;
     last_dashboard_refresh_ms = now_ms;
   }
+  if (!lv_obj_has_flag(pair_page, LV_OBJ_FLAG_HIDDEN) &&
+      (PairingSignature(snapshot) != rendered_pairing_signature ||
+       network_status != rendered_pairing_network_status)) {
+    BuildPairing(snapshot);
+  }
   if (!lv_obj_has_flag(history_page, LV_OBJ_FLAG_HIDDEN)) {
-    const Die *selected = nullptr;
-    for (std::size_t i = 0; i < snapshot.dice_count; ++i) {
-      if (snapshot.dice[i].pixel_id == history_pixel_id) {
-        selected = &snapshot.dice[i];
-        break;
-      }
-    }
-    UpdateHistoryStatus(selected);
     const RollHistory history = model->GetRollHistory(history_pixel_id);
     const uint64_t newest_timestamp =
         history.count == 0 ? 0 : history.events[0].timestamp_ms;
@@ -589,6 +767,16 @@ void UiTimer(lv_timer_t *) {
         newest_timestamp != rendered_history_timestamp) {
       BuildHistory(history_pixel_id, now_ms);
     }
+  }
+  if (!lv_obj_has_flag(stats_page, LV_OBJ_FLAG_HIDDEN)) {
+    const Die *selected = nullptr;
+    for (std::size_t i = 0; i < snapshot.dice_count; ++i) {
+      if (snapshot.dice[i].pixel_id == history_pixel_id) {
+        selected = &snapshot.dice[i];
+        break;
+      }
+    }
+    UpdateStatsStatus(selected);
   }
 }
 
@@ -637,13 +825,13 @@ esp_err_t StartUi(board::Hardware *board_hardware, DiceModel *dice_model) {
   lv_obj_t *title = MakeLabel(root, "PIXELS", &lv_font_montserrat_14, kText);
   lv_obj_set_pos(title, 8, 6);
   count_label = MakeLabel(root, "0", &lv_font_montserrat_12, kMuted);
-  lv_obj_align(count_label, LV_ALIGN_TOP_RIGHT, -32, 8);
+  lv_obj_align(count_label, LV_ALIGN_TOP_RIGHT, -42, 8);
   network_status_label =
       MakeLabel(root, "OFF", &lv_font_montserrat_12, kMuted);
   lv_obj_align(network_status_label, LV_ALIGN_TOP_MID, 10, 8);
   lv_obj_t *pair_button = lv_button_create(root);
-  lv_obj_set_size(pair_button, 28, 24);
-  lv_obj_align(pair_button, LV_ALIGN_TOP_RIGHT, -4, 2);
+  lv_obj_set_size(pair_button, 36, 26);
+  lv_obj_align(pair_button, LV_ALIGN_TOP_RIGHT, -2, 0);
   lv_obj_set_style_bg_color(pair_button, Color(0x334155), 0);
   lv_obj_add_event_cb(pair_button, OpenPairing, LV_EVENT_CLICKED, nullptr);
   lv_obj_t *plus = MakeLabel(pair_button, "+", &lv_font_montserrat_18, kText);
@@ -658,6 +846,7 @@ esp_err_t StartUi(board::Hardware *board_hardware, DiceModel *dice_model) {
   lv_obj_set_style_bg_color(aggregate, Color(kAccent), 0);
   lv_obj_set_style_border_width(aggregate, 0, 0);
   lv_obj_set_style_radius(aggregate, 10, 0);
+  lv_obj_set_style_pad_all(aggregate, 6, 0);
   lv_obj_add_flag(aggregate, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(aggregate, AggregateClicked, LV_EVENT_CLICKED, nullptr);
   aggregate_mode =
@@ -672,7 +861,7 @@ esp_err_t StartUi(board::Hardware *board_hardware, DiceModel *dice_model) {
   lv_obj_add_event_cb(aggregate_clear, AggregateCleared, LV_EVENT_CLICKED,
                       nullptr);
   lv_obj_t *clear_label =
-      MakeLabel(aggregate_clear, "CLEAR", &lv_font_montserrat_12, kText);
+      MakeLabel(aggregate_clear, "CLR", &lv_font_montserrat_12, kText);
   lv_obj_center(clear_label);
 
   pair_page = lv_obj_create(root);
@@ -684,6 +873,11 @@ esp_err_t StartUi(board::Hardware *board_hardware, DiceModel *dice_model) {
   lv_obj_set_size(history_page, lv_pct(100), lv_pct(100));
   lv_obj_set_pos(history_page, 0, 0);
   lv_obj_add_flag(history_page, LV_OBJ_FLAG_HIDDEN);
+
+  stats_page = lv_obj_create(root);
+  lv_obj_set_size(stats_page, lv_pct(100), lv_pct(100));
+  lv_obj_set_pos(stats_page, 0, 0);
+  lv_obj_add_flag(stats_page, LV_OBJ_FLAG_HIDDEN);
 
   Relayout();
   lv_timer_create(UiTimer, 250, nullptr);

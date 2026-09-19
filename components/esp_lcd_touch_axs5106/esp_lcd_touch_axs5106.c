@@ -128,7 +128,14 @@ static esp_err_t esp_lcd_touch_axs5106_read_data(esp_lcd_touch_handle_t tp)
     assert(tp != NULL);
 
     err = touch_axs5106_i2c_read(tp, TOUCH_AXS5106_TOUCH_POINTS_REG, data, 14);
-    ESP_RETURN_ON_ERROR(err, TAG, "I2C read error!");
+    if (err != ESP_OK)
+    {
+        portENTER_CRITICAL(&tp->data.lock);
+        tp->data.points = 0;
+        portEXIT_CRITICAL(&tp->data.lock);
+        ESP_LOGW(TAG, "I2C read failed: %s", esp_err_to_name(err));
+        return ESP_OK;
+    }
     points = data[1];
     points = points & 0x0F;
 
@@ -234,7 +241,12 @@ static esp_err_t touch_axs5106_i2c_read(esp_lcd_touch_handle_t tp, uint8_t reg, 
 {
     assert(tp != NULL);
     assert(data != NULL);
-    return i2c_master_transmit_receive(g_dev_handle, &reg, 1, data, len, 100);
+    esp_err_t ret = i2c_master_transmit(g_dev_handle, &reg, 1, 100);
+    if (ret != ESP_OK)
+    {
+        return ret;
+    }
+    return i2c_master_receive(g_dev_handle, data, len, 100);
 }
 
 static esp_err_t touch_axs5106_init(esp_lcd_touch_handle_t tp)

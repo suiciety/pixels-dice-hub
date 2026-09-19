@@ -8,6 +8,7 @@ namespace app {
 namespace {
 
 constexpr uint64_t kRestoreGraceMs = 15000;
+constexpr uint64_t kCandidateLifetimeMs = 15000;
 
 class Lock {
 public:
@@ -150,16 +151,25 @@ void DiceModel::Ingest(const pixels::Advertisement &advertisement,
       candidate_index = static_cast<int>(candidate_count_++);
       changed = true;
     } else {
-      candidate_index = static_cast<int>(candidate_count_ - 1);
+      std::size_t oldest_index = 0;
+      for (std::size_t i = 1; i < candidate_count_; ++i) {
+        if (candidates_[i].last_seen_ms <
+            candidates_[oldest_index].last_seen_ms) {
+          oldest_index = i;
+        }
+      }
+      if (now_ms - candidates_[oldest_index].last_seen_ms <=
+          kCandidateLifetimeMs) {
+        return;
+      }
+      candidate_index = static_cast<int>(oldest_index);
+      changed = true;
     }
   }
   const Die previous = candidates_[candidate_index];
   changed = ApplyAdvertisement(&candidates_[candidate_index], advertisement,
                                now_ms) ||
             changed || std::abs(previous.rssi - advertisement.rssi) >= 5;
-  std::sort(
-      candidates_.begin(), candidates_.begin() + candidate_count_,
-      [](const Die &left, const Die &right) { return left.rssi > right.rssi; });
   if (changed) {
     ++revision_;
   }
@@ -347,7 +357,6 @@ Snapshot DiceModel::GetSnapshot(uint64_t now_ms) const {
     break;
   }
 
-  constexpr uint64_t kCandidateLifetimeMs = 15000;
   std::size_t output = 0;
   for (std::size_t i = 0; i < snapshot.candidate_count; ++i) {
     if (now_ms - snapshot.candidates[i].last_seen_ms <= kCandidateLifetimeMs) {

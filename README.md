@@ -20,11 +20,17 @@ and per die.
 | Target | Interface | Status |
 | --- | --- | --- |
 | Waveshare ESP32-C6-Touch-LCD-1.47 | 172 x 320 touch display and web UI | Builds; physical touchscreen validation still required |
+| Waveshare ESP32-C6-Touch-AMOLED-1.64 | 280 x 456 touch display and web UI | Planned |
 | Classic ESP32/ESP32-WROOM | Web UI only | Hardware tested |
+| Generic ESP32-C3/C6/S3 boards | Web UI only | Planned |
+| Selected ESP32-S3 LCD/AMOLED boards | Touch display and web UI | Provisional pending exact models |
 
 The C6 board combines a JD9853 LCD, AXS5106L capacitive touch controller, and
 QMI8658 IMU. The dashboard automatically switches between portrait and
-landscape layouts.
+landscape layouts. Planned boards will share the application through
+board-specific hardware profiles; see the
+[project plan](docs/project-plan.md#hardware-targets) for selection criteria
+and porting phases.
 
 ## Features
 
@@ -76,12 +82,13 @@ The single-page dashboard mirrors the dice grid and aggregate control, supports
 pairing and removal, displays live roll states, and keeps the last 20
 completed rolls overall plus the last 20 rolls for each paired die in RAM. Tap
 or click a die card to open its individual history and briefly blink that
-physical die for identification. The detail view also shows its live battery
-level, charging state, roll state, signal strength, online status, firmware
-information, installed profile hash, available die flash, and temperatures.
-Closing the history view blinks it again. The aggregate has a separate `CLEAR`
-action that does not erase history. Server-sent events notify the page of model
-changes, with periodic HTTP refresh as a fallback. The Wi-Fi form can
+physical die for identification. On the touchscreen, a separate `INFO` view
+shows battery level, charging state, roll state, signal strength, firmware
+information, installed profile hash, available die flash, and temperatures,
+and provides an unpair action. Closing the history view blinks the die again.
+The aggregate has a separate `CLR` action that does not erase history.
+Server-sent events notify the page of model changes, with periodic HTTP refresh
+as a fallback. The Wi-Fi form can
 additionally connect the device to an existing network while leaving the access
 point available.
 

@@ -2,9 +2,9 @@
 
 ## Goal
 
-Build an ESP-IDF device that discovers and registers up to eight Pixels dice,
-shows their latest completed rolls on a 172 x 320 color display, and publishes
-the same state to Home Assistant.
+Build portable ESP-IDF firmware that discovers and registers up to eight
+Pixels dice, presents their state on either a local touchscreen or a web-only
+dashboard, and can be built for several common ESP32 development boards.
 
 The display has a permanent aggregate area. Activating that area cycles:
 
@@ -12,22 +12,55 @@ The display has a permanent aggregate area. Activating that area cycles:
 
 A separate clear control starts a new aggregate round.
 
-## Selected hardware
+## Hardware targets
 
-The selected target is the **Waveshare ESP32-C6-Touch-LCD-1.47**:
+The initial display target is the
+**Waveshare ESP32-C6-Touch-LCD-1.47**:
 
 - 172 x 320 JD9853 display
 - AXS5106L capacitive touch controller
 - QMI8658 six-axis IMU for automatic orientation
 - ESP32-C6 with 8 MB flash and no PSRAM
 
-The similarly named ESP32-S3-Touch-LCD-1.47 has touch and PSRAM but no IMU.
-The original ESP32-C3-LCD-1.47 has neither touch nor an IMU suitable for the
-requested interaction.
+The firmware also supports the existing classic ESP32/ESP32-WROOM headless
+build. Additional targets will be added through board profiles rather than by
+forking the application:
+
+| Target family | Local UI | Status | Notes |
+|---|---|---|---|
+| Waveshare ESP32-C6-Touch-LCD-1.47 | 172 x 320 LCD and touch | Current | Initial display target |
+| Waveshare ESP32-C6-Touch-AMOLED-1.64 | 280 x 456 AMOLED and touch | Planned | CO5300 QSPI display, FT6146 touch, QMI8658 IMU, 16 MB flash |
+| Classic ESP32/ESP32-WROOM | Web only | Current | Hardware-tested headless target |
+| Generic ESP32-C3 DevKit/SuperMini | Web only | Planned | Low-cost single-core BLE/Wi-Fi target |
+| Generic ESP32-C6 DevKit/SuperMini | Web only | Planned | Single-core target matching the display boards' MCU family |
+| Generic ESP32-S3 | Web only | Planned | Dual-core target; PSRAM capability depends on module |
+| ESP32-S3 LCD touchscreen boards | Display and web | Provisional | Exact board selected by controller, touch IC, PSRAM, and vendor documentation |
+| ESP32-S3 AMOLED touchscreen boards | Display and web | Provisional | Exact board selected after purchase candidates are known |
+
+The S3 display entries describe target families, not a promise that every
+AliExpress board with the same screen size is interchangeable. Boards commonly
+differ in display controller, touch controller, pin routing, power control,
+flash/PSRAM package, and USB wiring even when their listing titles are similar.
+An exact product link, schematic, or vendor example is required before adding
+a concrete board profile.
 
 The implementation uses ESP-IDF rather than ESPHome. Direct SDK access gives
-better control over the C6's limited internal RAM, BLE scan scheduling, display
-buffers, touch driver, and runtime orientation.
+better control over memory, BLE scan scheduling, display buffers, touch
+drivers, and runtime orientation across the supported MCU families.
+
+### Board selection criteria
+
+Candidate boards should be assessed in this order:
+
+1. BLE and Wi-Fi support compatible with ESP-IDF and NimBLE.
+2. Published schematic, pin map, and working ESP-IDF or Arduino display example.
+3. Known display and touch controller part numbers.
+4. At least 8 MB flash for display builds; 16 MB is preferred for future OTA.
+5. PSRAM is preferred for high-resolution S3 displays but is not required when
+   partial LVGL buffers are practical.
+6. Touch input for display builds; an IMU is preferred for automatic rotation.
+7. USB flashing/debugging that does not consume required peripheral pins.
+8. Stable availability from more than one seller where possible.
 
 ## Proposed architecture
 
@@ -50,8 +83,14 @@ Pixels protocol/model layer
           |                    |
           v                    v
 LVGL dashboard          HTTP/JSON web UI
-dynamic tiles           dashboard + roll history
+board capabilities      dashboard + roll history
+and dynamic tiles
 ```
+
+The BLE, model, command, persistence, API, and web layers remain
+board-independent. A compile-time board profile supplies display dimensions,
+display and touch initialization, orientation capabilities, brightness/power
+handling, and board pin assignments.
 
 ### Why advertisements, not eight connections
 
@@ -110,7 +149,8 @@ Face conversion follows the official type rules:
 - Repeated advertisements for the same roll do not create duplicate events.
 - `Handling`, `Rolling`, and `Crooked` update status decoration but do not
   replace the last valid roll.
-- A die becomes stale after a configurable timeout, initially 15 seconds.
+- A paired die is shown as offline after two minutes without an advertisement;
+  its registration and last completed value remain visible.
 - Every completed roll from a registered die is added to the current aggregate
   round, including repeated rolls from the same die.
 - Last rolls remain visible after the aggregate round is cleared.
@@ -137,20 +177,30 @@ the Pixels `Blink` command, then disconnects and resumes advertisement scanning.
 
 ## Repository structure
 
-Planned repository layout after approval:
+Target repository layout:
 
 ```text
 pixels-dice-hub/
+├── boards/
+│   ├── waveshare_c6_lcd_147/
+│   ├── waveshare_c6_amoled_164/
+│   ├── generic_esp32/
+│   ├── generic_esp32c3/
+│   ├── generic_esp32c6/
+│   ├── generic_esp32s3/
+│   └── <specific_s3_display_board>/
 ├── components/
 │   ├── pixels_protocol/
 │   ├── esp_lcd_jd9853/
-│   └── esp_lcd_touch_axs5106/
+│   ├── esp_lcd_touch_axs5106/
+│   └── <drivers required by enabled display targets>/
 ├── main/
 │   ├── app_main.cpp
-│   ├── board.cpp
+│   ├── board.h
 │   ├── dice_model.cpp
 │   ├── pixels_ble.cpp
 │   └── ui.cpp
+├── headless/
 ├── tests/
 ├── docs/
 ├── CMakeLists.txt
@@ -158,8 +208,22 @@ pixels-dice-hub/
 ```
 
 The C++ application owns BLE parsing, slot state, persistence, aggregate
-calculation, board drivers, and LVGL layout. Home Assistant integration remains
-a later network/API phase rather than a dependency of the local dashboard.
+calculation, and LVGL layout. Board profiles own hardware initialization.
+Home Assistant integration remains a later network/API phase rather than a
+dependency of the local dashboard.
+
+### Build strategy
+
+- Each MCU family has its own ESP-IDF build directory and `sdkconfig.defaults`.
+- Display profiles compile only the drivers required by that board.
+- Headless profiles omit LVGL, display, touch, and IMU components.
+- UI code obtains resolution and capabilities from the board profile rather
+  than using hard-coded dimensions.
+- The build produces a clearly named artifact for each concrete board.
+- Exact pin mappings are never shared between boards merely because they use
+  the same ESP32 module or display size.
+- The 16 MB AMOLED target receives a board-specific partition table so its
+  additional flash can eventually support OTA and assets.
 
 ## Optional Home Assistant surface
 
@@ -214,6 +278,48 @@ Planned entities:
 - Measure missed-roll rate, memory headroom, UI latency, reboot recovery, and
   stale-device behavior.
 
+### Phase 7 - Multi-board foundation
+
+- Replace hard-coded display dimensions with board capabilities.
+- Split current JD9853/AXS5106 initialization into the LCD board profile.
+- Move brightness, touch transform, and IMU orientation behind the board API.
+- Add scalable UI metrics for dimensions, pixel density, fonts, spacing, and
+  minimum physical touch-target size.
+- Stop rebuilding the complete dashboard on periodic status refreshes; update
+  existing LVGL objects so higher-resolution displays do not add avoidable
+  single-core CPU load.
+- Add repeatable build commands and artifact names for every concrete target.
+
+### Phase 8 - Additional headless targets
+
+- Add generic ESP32-C3 and ESP32-C6 headless profiles.
+- Add a generic ESP32-S3 headless profile with optional PSRAM configuration.
+- Verify BLE scanning, Wi-Fi/SSE responsiveness, free heap, and flash layout on
+  one representative board from each MCU family.
+- Keep the classic ESP32-WROOM build as the minimum compatibility baseline.
+
+### Phase 9 - Waveshare C6 AMOLED port
+
+- Integrate the CO5300 QSPI panel using Waveshare's reference initialization.
+- Integrate FT6146 touch and verify coordinate transforms in all orientations.
+- Add 280 x 456 portrait and 456 x 280 landscape UI metrics and mockups.
+- Retain partial double buffering; do not allocate a full framebuffer.
+- Add controller-driven brightness, idle dimming, screen-off wake, and
+  AMOLED burn-in mitigation.
+- Validate display flush time while BLE scanning and while Wi-Fi is active.
+
+### Phase 10 - Selected ESP32-S3 display ports
+
+- Select concrete LCD and AMOLED boards only after exact listings are known.
+- Prefer boards with PSRAM, documented ESP-IDF support, and maintained
+  display/touch drivers.
+- Add one board profile per electrical design, even when multiple listings use
+  the same nominal screen.
+- Reuse the common UI and choose a resolution/DPI metrics profile where
+  possible; add a new layout profile only when aspect ratio requires it.
+- Hardware-test touch, brightness, sleep/wake, PSRAM/DMA compatibility, BLE
+  coexistence, and USB flashing before declaring a target supported.
+
 ## Acceptance criteria
 
 - Registers zero to eight Pixels dice and restores them after reboot.
@@ -226,6 +332,12 @@ Planned entities:
   as completed rolls.
 - Exposes equivalent state and controls to Home Assistant.
 - Continues receiving all eight dice during normal Wi-Fi/API activity.
+- Builds shared application code for each concrete board target without
+  conditional pin or controller logic leaking into the model and BLE layers.
+- Uses usable physical touch targets and unclipped layouts at every supported
+  display resolution and orientation.
+- Documents exact module, flash/PSRAM variant, controller ICs, and pin mapping
+  for every supported display board.
 
 ## Principal risks
 
@@ -235,5 +347,10 @@ Planned entities:
 | Single-core Wi-Fi/BLE/display contention | Add networking only after eight-die soak testing |
 | BLE advertisements may be missed | Continuous active scan, fragment merging, duplicate tolerance, real eight-die soak test |
 | LVGL/BLE memory pressure | Fixed-size state, partial display buffer, no unnecessary GATT clients |
-| Board display needs custom offsets/init | Start from Waveshare ST7789 sequence and verify on hardware |
+| Board display needs custom offsets/init | Start from the vendor's controller-specific sequence and verify on hardware |
 | Protocol revisions | Strict length checks, version-aware mappings, captured packet fixtures |
+| Similar board names hide incompatible wiring | Require exact product revision, schematic, and pin map for every board profile |
+| Higher-resolution display increases CPU and RAM pressure | Partial buffers, incremental LVGL updates, measured flush and heap budgets |
+| AMOLED static-content burn-in | Dark theme, idle dimming/screen-off, and optional pixel shifting |
+| Generic S3 board may ship without expected PSRAM | Record the exact module suffix and provide PSRAM and non-PSRAM configurations |
+| Supporting too many one-off boards becomes costly | Promote only hardware-tested profiles to supported status; keep other profiles provisional |

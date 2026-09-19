@@ -13,6 +13,7 @@ namespace app {
 constexpr std::size_t kMaxDice = 8;
 constexpr std::size_t kMaxCandidates = 12;
 constexpr std::size_t kRollHistorySize = 20;
+constexpr uint64_t kDieOfflineMs = 120000;
 
 enum class AggregateMode : uint8_t { kSum = 0, kHigh = 1, kLow = 2 };
 
