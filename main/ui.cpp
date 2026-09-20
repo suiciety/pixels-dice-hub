@@ -932,8 +932,19 @@ void TileGeometry(std::size_t count, bool landscape, int *columns, int *rows) {
 
 void BuildDashboard(const Snapshot &snapshot, uint64_t now_ms) {
   lv_obj_clean(content);
-  char count[8];
-  std::snprintf(count, sizeof(count), "%u",
+  std::array<std::size_t, kMaxDice> active_indices{};
+  std::size_t active_count = 0;
+  for (std::size_t i = 0; i < snapshot.dice_count; ++i) {
+    const Die &die = snapshot.dice[i];
+    if (die.last_activity_ms != 0 &&
+        now_ms - die.last_activity_ms <= kDieActiveMs) {
+      active_indices[active_count++] = i;
+    }
+  }
+
+  char count[12];
+  std::snprintf(count, sizeof(count), "%u/%u",
+                static_cast<unsigned>(active_count),
                 static_cast<unsigned>(snapshot.dice_count));
   lv_label_set_text(count_label, count);
 
@@ -943,31 +954,39 @@ void BuildDashboard(const Snapshot &snapshot, uint64_t now_ms) {
   const int height = lv_obj_get_height(content);
   int columns = 1;
   int rows = 1;
-  TileGeometry(snapshot.dice_count == 0 ? 1 : snapshot.dice_count, landscape,
+  TileGeometry(active_count == 0 ? 1 : active_count, landscape,
                &columns, &rows);
   const int gap = 4;
   const int tile_width = (width - gap * (columns - 1)) / columns;
   const int tile_height = (height - gap * (rows - 1)) / rows;
 
-  if (snapshot.dice_count == 0) {
+  if (active_count == 0) {
     lv_obj_t *empty = lv_obj_create(content);
     lv_obj_set_size(empty, tile_width, tile_height);
     StyleCard(empty, 0x334155);
     lv_obj_add_flag(empty, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(empty, OpenPairing, LV_EVENT_CLICKED, nullptr);
     lv_obj_t *title =
-        MakeLabel(empty, "NO DICE", &lv_font_montserrat_24, kText);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -18);
-    lv_obj_t *hint =
-        MakeLabel(empty, "TAP TO PAIR", &lv_font_montserrat_14, kMuted);
-    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 18);
+        MakeLabel(empty, "NO ACTIVE DICE", &lv_font_montserrat_18, kText);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -32);
+    char summary[40];
+    std::snprintf(summary, sizeof(summary), "%u PAIRED  |  %u FOUND",
+                  static_cast<unsigned>(snapshot.dice_count),
+                  static_cast<unsigned>(snapshot.candidate_count));
+    lv_obj_t *summary_label =
+        MakeLabel(empty, summary, &lv_font_montserrat_12, kMuted);
+    lv_obj_align(summary_label, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_t *hint = MakeLabel(empty, "HANDLE A DIE\nOR TAP TO PAIR",
+                               &lv_font_montserrat_12, kMuted);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 32);
     return;
   }
 
   constexpr uint32_t accents[] = {0x8b5cf6, 0x38bdf8, 0xf59e0b, 0x22c55e,
                                   0xec4899, 0x06b6d4, 0xf97316, 0x84cc16};
-  for (std::size_t i = 0; i < snapshot.dice_count; ++i) {
-    const Die &die = snapshot.dice[i];
+  for (std::size_t i = 0; i < active_count; ++i) {
+    const Die &die = snapshot.dice[active_indices[i]];
     const int column = static_cast<int>(i) % columns;
     const int row = static_cast<int>(i) / columns;
     lv_obj_t *tile = lv_obj_create(content);

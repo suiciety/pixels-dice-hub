@@ -137,7 +137,15 @@ void DiceModel::Ingest(const pixels::Advertisement &advertisement,
         ((has_advertised_roll_state_[index] &&
           advertised_roll_state_[index] != pixels::RollState::kRolled) ||
          first_observation_after_restore);
+    const bool physically_active =
+        has_advertised_roll_state_[index] &&
+        advertised_roll_state_[index] != advertisement.roll_state &&
+        advertisement.roll_state != pixels::RollState::kUnknown;
     bool changed = ApplyAdvertisement(&die, advertisement, now_ms);
+    if (physically_active) {
+      die.last_activity_ms = now_ms;
+      changed = true;
+    }
     if (completed_roll) {
       AddRollEvent(index, now_ms);
       changed = true;

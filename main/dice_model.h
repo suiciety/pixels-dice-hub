@@ -15,6 +15,7 @@ constexpr std::size_t kMaxDice = 8;
 constexpr std::size_t kMaxCandidates = 12;
 constexpr std::size_t kRollHistorySize = 20;
 constexpr uint64_t kDieOfflineMs = 120000;
+constexpr uint64_t kDieActiveMs = 30ULL * 60ULL * 1000ULL;
 
 enum class AggregateMode : uint8_t { kSum = 0, kHigh = 1, kLow = 2 };
 
@@ -30,6 +31,7 @@ struct Die {
   int16_t mcu_temperature_centi_c = 0;
   int16_t battery_temperature_centi_c = 0;
   uint64_t last_seen_ms = 0;
+  uint64_t last_activity_ms = 0;
   uint16_t firmware_version = 0;
   uint8_t battery = 0;
   uint8_t battery_state = 0;

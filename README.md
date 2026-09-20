@@ -50,6 +50,8 @@ and porting phases.
 - Provides a responsive, dependency-free web dashboard embedded in firmware.
 - Runs the touchscreen with Wi-Fi off by default for higher BLE scan duty.
 - Supports four-way touchscreen orientation using the onboard IMU.
+- Shows only dice handled or rolled within the last 30 minutes while retaining
+  all pairings; the empty dashboard reports paired/discovered counts.
 
 ## Planning artifacts
 

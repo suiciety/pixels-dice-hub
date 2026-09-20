@@ -59,6 +59,12 @@ Each tile can contain:
 | Handling | Amber border/ring and strongly dimmed previous value |
 | Crooked | Red border and ring |
 | Stale/offline | Dim tile and grey ring after two minutes |
+
+The dashboard only includes paired dice that have changed physical roll state
+within the last 30 minutes. Pairing is retained when a tile disappears. After
+startup no die is considered active until it is handled or rolled; the empty
+dashboard shows active/paired discovery counts and prompts the player to handle
+a die or open pairing.
 | Battery under 15% | Red battery fill |
 | Charging | Green battery fill |
 | No completed roll | Em dash as value |

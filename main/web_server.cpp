@@ -153,9 +153,9 @@ document.querySelector('#calc-result').textContent=c.hasResult?c.resultText:'';
 const start=document.querySelector('#calc-start');start.disabled=rolling;
 start.textContent=rolling?'Rolling…':(c.status==='COMPLETE'?'Roll again':'Start round')}
 async function refresh(){if(refreshing)return;refreshing=true;try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();
-currentDice=s.dice;updateDieStatus();
-document.querySelector('#status').textContent=`${s.dice.length} paired · live`;
-document.querySelector('#dice').innerHTML=s.dice.length?s.dice.map(dieCard).join(''):'<div class="card empty">No dice paired</div>';
+currentDice=s.dice;updateDieStatus();const active=s.dice.filter(d=>d.active);
+document.querySelector('#status').textContent=`${active.length} active · ${s.dice.length} paired · ${s.candidates.length} found`;
+document.querySelector('#dice').innerHTML=active.length?active.map(dieCard).join(''):`<div class="card empty">No active dice<br><small>${s.dice.length} paired · ${s.candidates.length} found</small><br>Handle a die or pair one below</div>`;
 document.querySelector('#mode').textContent=s.aggregate.mode+' ›';document.querySelector('#total').textContent=s.aggregate.hasValue?s.aggregate.value:'-';
 document.querySelector('#roll-count').textContent=s.aggregate.rollCount+' roll'+(s.aggregate.rollCount===1?'':'s');
 renderCalculator(s.calculator);
@@ -236,6 +236,8 @@ void SendDie(httpd_req_t *request, const Die &die, uint64_t now_ms) {
   char buffer[512];
   const bool offline =
       die.last_seen_ms == 0 || now_ms - die.last_seen_ms > kDieOfflineMs;
+  const bool active = die.last_activity_ms != 0 &&
+                      now_ms - die.last_activity_ms <= kDieActiveMs;
   std::snprintf(buffer, sizeof(buffer),
                 "{\"id\":\"%08lx\",\"type\":\"%s\",\"name\":",
                 static_cast<unsigned long>(die.pixel_id),
@@ -245,14 +247,15 @@ void SendDie(httpd_req_t *request, const Die &die, uint64_t now_ms) {
   std::snprintf(buffer, sizeof(buffer),
                 ",\"roll\":%d,\"hasRoll\":%s,\"battery\":%u,"
                 "\"batteryState\":\"%s\",\"charging\":%s,\"rssi\":%d,"
-                "\"offline\":%s,\"state\":\"%s\",\"hasConnectedInfo\":%s,"
+                "\"offline\":%s,\"active\":%s,\"state\":\"%s\","
+                "\"hasConnectedInfo\":%s,"
                 "\"firmwareVersion\":%u,\"firmwareTimestamp\":%lu,"
                 "\"profileHash\":\"%08lx\",\"availableFlash\":%lu,"
                 "\"mcuTemperature\":",
                 die.last_roll, die.has_roll ? "true" : "false", die.battery,
                 BatteryStateName(die),
                 die.charging ? "true" : "false", die.rssi,
-                offline ? "true" : "false",
+                offline ? "true" : "false", active ? "true" : "false",
                 pixels::RollStateName(die.roll_state),
                 die.has_connected_info ? "true" : "false",
                 die.firmware_version,
