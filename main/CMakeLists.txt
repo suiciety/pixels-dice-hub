@@ -2,6 +2,7 @@ idf_component_register(
   SRCS
     "app_main.cpp"
     "board.cpp"
+    "dice_calculator.cpp"
     "dice_model.cpp"
     "pixels_ble.cpp"
     "preferences.cpp"

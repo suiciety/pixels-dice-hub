@@ -39,6 +39,7 @@ constexpr uint8_t kQmiCtrl7 = 0x08;
 constexpr uint8_t kQmiStatus0 = 0x2e;
 constexpr uint8_t kQmiAccelXLow = 0x35;
 constexpr uint8_t kQmiReset = 0x60;
+constexpr uint8_t kQmiAccel2g500Hz = 0x04;
 constexpr int16_t kOrientationThreshold = 6000;
 constexpr int16_t kOrientationHysteresis = 1200;
 
@@ -84,13 +85,17 @@ esp_err_t InitImu(Hardware *hardware) {
 
   ESP_RETURN_ON_ERROR(WriteRegister(qmi_handle, kQmiReset, 0xb0), kTag,
                       "Unable to reset QMI8658");
-  vTaskDelay(pdMS_TO_TICKS(10));
+  vTaskDelay(pdMS_TO_TICKS(100));
   ESP_RETURN_ON_ERROR(WriteRegister(qmi_handle, kQmiCtrl1, 0x40), kTag,
                       "Unable to configure QMI8658");
-  ESP_RETURN_ON_ERROR(WriteRegister(qmi_handle, kQmiCtrl2, 0x95), kTag,
+  ESP_RETURN_ON_ERROR(
+      WriteRegister(qmi_handle, kQmiCtrl2, kQmiAccel2g500Hz), kTag,
                       "Unable to configure accelerometer");
   ESP_RETURN_ON_ERROR(WriteRegister(qmi_handle, kQmiCtrl7, 0x01), kTag,
                       "Unable to enable accelerometer");
+  vTaskDelay(pdMS_TO_TICKS(100));
+  ESP_LOGI(kTag, "QMI8658 detected at 0x%02x, accelerometer set to +/-2g",
+           kQmiAddress);
   return ESP_OK;
 }
 
@@ -280,8 +285,8 @@ void SetOrientation(Hardware *hardware, Orientation orientation) {
     return;
   }
   const lv_display_rotation_t rotations[] = {
-      LV_DISPLAY_ROTATION_0, LV_DISPLAY_ROTATION_90, LV_DISPLAY_ROTATION_180,
-      LV_DISPLAY_ROTATION_270};
+      LV_DISPLAY_ROTATION_180, LV_DISPLAY_ROTATION_270, LV_DISPLAY_ROTATION_0,
+      LV_DISPLAY_ROTATION_90};
   lv_display_set_rotation(hardware->display,
                           rotations[static_cast<uint8_t>(orientation)]);
 }

@@ -80,8 +80,36 @@ information hierarchy rather than final typography:
 The selected ESP32-C6 touch board includes a QMI8658 accelerometer/gyroscope.
 The firmware samples acceleration at 10 Hz, requires eight stable readings
 before rotating, and applies hysteresis near diagonal/flat positions to avoid
-screen chatter.
+screen chatter. The accelerometer uses the board reference's ±2g range so
+stationary gravity is comfortably above the orientation threshold.
 
 Portrait uses a bottom aggregate panel. Landscape uses a permanent right-side
 aggregate panel, leaving the wider area for a 2-, 3-, or 4-column dice grid.
 LVGL rotates both display output and touch coordinates together.
+## Result and guided-roll menu
+
+Tapping the dashboard result panel opens a scrollable list. The first options
+select the aggregate result directly: `SUM`, `HIGHEST`, or `LOWEST`. The
+remaining options open the selected guided calculator preset; there is no
+separate header `FX` button and aggregate selection does not require cycling
+through modes.
+
+The calculator uses three touch stages: preset/configuration, explicit
+physical-roll instructions, and a live completed result. Configuration uses
+large cycle, plus/minus, and toggle controls rather than a free-form expression
+parser. `BACK` returns to the dashboard and `CANCEL` abandons an active round.
+
+Each instruction identifies the paired die name, die type, logical roll
+progress, and substitution step when applicable. A round advances only when
+that exact physical die reports a completed roll. Repeated instructions for
+one physical die are intentional when there are not enough paired dice.
+Pool presets select the largest group of equivalent paired dice. The player
+may roll any subset of that group on each throw, and each new completed roll
+counts until the configured total is reached. Direct D20
+advantage/disadvantage uses the same flexible behavior for paired D20s.
+Pool configuration includes an `AUTO`/die-type selector. AUTO uses the largest
+appropriate equivalent group; success pools exclude dice that cannot reach
+the configured target. A manual choice requires that die type to be paired.
+Landscape calculator pages scroll when their controls or result extend below
+the display. Configuration controls are locked during an active round; cancel
+the round before changing its preset or values.

@@ -6,6 +6,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "dice_calculator.h"
 #include "pixels_protocol.h"
 
 namespace app {
@@ -80,6 +81,7 @@ struct Snapshot {
   int64_t aggregate_value = 0;
   uint32_t aggregate_roll_count = 0;
   bool has_aggregate = false;
+  CalculatorSnapshot calculator{};
   uint32_t revision = 0;
 };
 
@@ -97,6 +99,10 @@ public:
   void CycleAggregate();
   void ClearAggregate();
   void RestoreAggregate(AggregateMode mode);
+  void AdjustCalculator(CalculatorSetting setting, int delta);
+  bool StartCalculator();
+  void CancelCalculator();
+  CalculatorSnapshot GetCalculatorSnapshot() const;
   void UpdateConnectedInfo(const ConnectedDieInfo &info, uint64_t now_ms);
   void UpdateTemperature(uint32_t pixel_id, int16_t mcu_temperature_centi_c,
                          int16_t battery_temperature_centi_c);
@@ -131,6 +137,7 @@ private:
   int aggregate_high_ = 0;
   int aggregate_low_ = 0;
   uint32_t aggregate_roll_count_ = 0;
+  DiceCalculator calculator_{};
   uint32_t revision_ = 1;
   uint64_t restore_grace_until_ms_ = 0;
 };

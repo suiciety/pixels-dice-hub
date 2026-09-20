@@ -114,6 +114,12 @@ void DiceModel::AddRollEvent(std::size_t die_index, uint64_t now_ms) {
     aggregate_low_ = std::min(aggregate_low_, die.last_roll);
   }
   ++aggregate_roll_count_;
+
+  CalculatorRoll calculator_roll;
+  calculator_roll.pixel_id = die.pixel_id;
+  calculator_roll.type = die.type;
+  calculator_roll.value = die.last_roll;
+  calculator_.Consume(calculator_roll);
 }
 
 void DiceModel::Ingest(const pixels::Advertisement &advertisement,
@@ -205,6 +211,7 @@ bool DiceModel::Unpair(uint32_t pixel_id) {
   if (index < 0) {
     return false;
   }
+  calculator_.Cancel();
   for (std::size_t i = index + 1; i < dice_count_; ++i) {
     dice_[i - 1] = dice_[i];
     die_history_[i - 1] = die_history_[i];
@@ -276,6 +283,40 @@ void DiceModel::RestoreAggregate(AggregateMode mode) {
   ++revision_;
 }
 
+void DiceModel::AdjustCalculator(CalculatorSetting setting, int delta) {
+  Lock lock(mutex_);
+  calculator_.Adjust(setting, delta);
+  ++revision_;
+}
+
+bool DiceModel::StartCalculator() {
+  Lock lock(mutex_);
+  if (calculator_.GetSnapshot().status == CalculatorStatus::kRolling) {
+    return false;
+  }
+  std::array<CalculatorDie, kMaxDice> available{};
+  for (std::size_t i = 0; i < dice_count_; ++i) {
+    available[i].pixel_id = dice_[i].pixel_id;
+    available[i].type = dice_[i].type;
+    std::strncpy(available[i].name, dice_[i].name,
+                 sizeof(available[i].name) - 1);
+  }
+  const bool started = calculator_.Start(available.data(), dice_count_);
+  ++revision_;
+  return started;
+}
+
+void DiceModel::CancelCalculator() {
+  Lock lock(mutex_);
+  calculator_.Cancel();
+  ++revision_;
+}
+
+CalculatorSnapshot DiceModel::GetCalculatorSnapshot() const {
+  Lock lock(mutex_);
+  return calculator_.GetSnapshot();
+}
+
 void DiceModel::UpdateConnectedInfo(const ConnectedDieInfo &info,
                                     uint64_t now_ms) {
   Lock lock(mutex_);
@@ -345,6 +386,7 @@ Snapshot DiceModel::GetSnapshot(uint64_t now_ms) const {
   snapshot.aggregate_roll_count = aggregate_roll_count_;
   snapshot.revision = revision_;
   snapshot.has_aggregate = aggregate_roll_count_ > 0;
+  snapshot.calculator = calculator_.GetSnapshot();
   switch (aggregate_mode_) {
   case AggregateMode::kSum:
     snapshot.aggregate_value = aggregate_sum_;

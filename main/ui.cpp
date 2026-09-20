@@ -37,6 +37,8 @@ lv_obj_t *network_status_label;
 lv_obj_t *pair_page;
 lv_obj_t *history_page;
 lv_obj_t *stats_page;
+lv_obj_t *calculator_page;
+lv_obj_t *mode_page;
 lv_obj_t *stats_status_label;
 uint32_t history_pixel_id;
 std::size_t rendered_history_count;
@@ -45,17 +47,16 @@ uint32_t rendered_revision;
 uint64_t last_dashboard_refresh_ms;
 uint64_t pair_page_opened_ms;
 uint64_t rendered_pairing_signature;
+uint32_t rendered_calculator_revision;
+bool calculator_defaults_initialized;
 NetworkStatus rendered_pairing_network_status = NetworkStatus::kOff;
 board::Orientation orientation = board::Orientation::kPortrait;
 
 void OpenStats(lv_event_t *event);
+void BuildCalculator();
+void OpenCalculator(lv_event_t *event);
 
 lv_color_t Color(uint32_t value) { return lv_color_hex(value); }
-
-void AggregateClicked(lv_event_t *) {
-  model->CycleAggregate();
-  SavePreferences(*model);
-}
 
 void AggregateCleared(lv_event_t *) {
   model->ClearAggregate();
@@ -87,6 +88,26 @@ void WifiToggle(lv_event_t *) {
     return;
   }
   rendered_revision = 0;
+}
+
+void CloseCalculator(lv_event_t *) {
+  model->CancelCalculator();
+  lv_obj_add_flag(calculator_page, LV_OBJ_FLAG_HIDDEN);
+}
+
+void CalculatorStart(lv_event_t *) {
+  model->StartCalculator();
+  BuildCalculator();
+}
+
+void CalculatorAdjust(lv_event_t *event) {
+  const uintptr_t encoded =
+      reinterpret_cast<uintptr_t>(lv_event_get_user_data(event));
+  const auto setting =
+      static_cast<CalculatorSetting>((encoded >> 8U) & 0xffU);
+  const int8_t delta = static_cast<int8_t>(encoded & 0xffU);
+  model->AdjustCalculator(setting, delta);
+  BuildCalculator();
 }
 
 uint32_t StateColor(pixels::RollState state) {
@@ -177,6 +198,98 @@ void StylePage(lv_obj_t *page) {
   lv_obj_set_style_radius(page, 0, 0);
   lv_obj_set_style_pad_all(page, 8, 0);
   lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+}
+
+void CloseModePage(lv_event_t *) {
+  lv_obj_add_flag(mode_page, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ModeSelected(lv_event_t *event) {
+  const uintptr_t selection =
+      reinterpret_cast<uintptr_t>(lv_event_get_user_data(event));
+  lv_obj_add_flag(mode_page, LV_OBJ_FLAG_HIDDEN);
+  if (selection <= static_cast<uintptr_t>(AggregateMode::kLow)) {
+    model->RestoreAggregate(static_cast<AggregateMode>(selection));
+    SavePreferences(*model);
+    return;
+  }
+
+  const auto preset =
+      static_cast<CalculatorPreset>(selection - 10U);
+  const CalculatorSnapshot snapshot = model->GetCalculatorSnapshot();
+  model->AdjustCalculator(
+      CalculatorSetting::kPreset,
+      static_cast<int>(preset) - static_cast<int>(snapshot.config.preset));
+  OpenCalculator(nullptr);
+}
+
+void AddModeOption(lv_obj_t *page, int y, const char *label,
+                   uintptr_t selection, bool selected) {
+  lv_obj_t *button = lv_button_create(page);
+  lv_obj_set_size(button, lv_pct(100), 36);
+  lv_obj_set_pos(button, 0, y);
+  lv_obj_set_style_bg_color(button, Color(selected ? kAccent : kPanel), 0);
+  lv_obj_add_event_cb(button, ModeSelected, LV_EVENT_CLICKED,
+                      reinterpret_cast<void *>(selection));
+  lv_obj_t *text =
+      MakeLabel(button, label, &lv_font_montserrat_12, kText);
+  lv_obj_align(text, LV_ALIGN_LEFT_MID, 4, 0);
+}
+
+void BuildModePage() {
+  const Snapshot dashboard = model->GetSnapshot(
+      static_cast<uint64_t>(esp_timer_get_time() / 1000));
+  const CalculatorSnapshot calculator = model->GetCalculatorSnapshot();
+  lv_obj_clean(mode_page);
+  StylePage(mode_page);
+  lv_obj_add_flag(mode_page, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_set_scroll_dir(mode_page, LV_DIR_VER);
+
+  lv_obj_t *title =
+      MakeLabel(mode_page, "RESULT / GAME", &lv_font_montserrat_14, kText);
+  lv_obj_set_pos(title, 2, 6);
+  lv_obj_t *back = lv_button_create(mode_page);
+  lv_obj_set_size(back, 54, 30);
+  lv_obj_align(back, LV_ALIGN_TOP_RIGHT, 0, 0);
+  lv_obj_set_style_bg_color(back, Color(0x334155), 0);
+  lv_obj_add_event_cb(back, CloseModePage, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *back_label =
+      MakeLabel(back, "BACK", &lv_font_montserrat_12, kText);
+  lv_obj_center(back_label);
+
+  int y = 44;
+  lv_obj_t *results =
+      MakeLabel(mode_page, "ROLL RESULTS", &lv_font_montserrat_12, kMuted);
+  lv_obj_set_pos(results, 2, y);
+  y += 22;
+  AddModeOption(mode_page, y, "SUM", 0,
+                dashboard.aggregate_mode == AggregateMode::kSum);
+  y += 40;
+  AddModeOption(mode_page, y, "HIGHEST", 1,
+                dashboard.aggregate_mode == AggregateMode::kHigh);
+  y += 40;
+  AddModeOption(mode_page, y, "LOWEST", 2,
+                dashboard.aggregate_mode == AggregateMode::kLow);
+  y += 48;
+
+  lv_obj_t *guided =
+      MakeLabel(mode_page, "GUIDED ROLLS", &lv_font_montserrat_12, kMuted);
+  lv_obj_set_pos(guided, 2, y);
+  y += 22;
+  for (int preset = static_cast<int>(CalculatorPreset::kD20Check);
+       preset <= static_cast<int>(CalculatorPreset::kDamagePool); ++preset) {
+    const auto value = static_cast<CalculatorPreset>(preset);
+    AddModeOption(mode_page, y, CalculatorPresetName(value),
+                  static_cast<uintptr_t>(preset) + 10U,
+                  calculator.config.preset == value);
+    y += 40;
+  }
+}
+
+void AggregateClicked(lv_event_t *) {
+  BuildModePage();
+  lv_obj_remove_flag(mode_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(mode_page);
 }
 
 void MakeBatteryIndicator(lv_obj_t *parent, const Die &die, bool stale) {
@@ -569,6 +682,241 @@ void OpenPairing(lv_event_t *) {
   lv_obj_move_foreground(pair_page);
 }
 
+void AddCalculatorControl(lv_obj_t *parent, int y, const char *label,
+                          const char *value, CalculatorSetting setting,
+                          bool toggle = false) {
+  const int width = lv_obj_get_content_width(parent);
+  lv_obj_t *caption =
+      MakeLabel(parent, label, &lv_font_montserrat_12, kMuted);
+  lv_obj_set_pos(caption, 2, y + 10);
+
+  if (!toggle) {
+    lv_obj_t *minus = lv_button_create(parent);
+    lv_obj_set_size(minus, 34, 32);
+    lv_obj_set_pos(minus, width - 108, y);
+    lv_obj_set_style_bg_color(minus, Color(0x334155), 0);
+    const uintptr_t encoded =
+        (static_cast<uintptr_t>(setting) << 8U) | 0xffU;
+    lv_obj_add_event_cb(minus, CalculatorAdjust, LV_EVENT_CLICKED,
+                        reinterpret_cast<void *>(encoded));
+    lv_obj_t *minus_label =
+        MakeLabel(minus, "-", &lv_font_montserrat_18, kText);
+    lv_obj_center(minus_label);
+  }
+
+  lv_obj_t *value_button = lv_button_create(parent);
+  lv_obj_set_size(value_button, toggle ? 72 : 34, 32);
+  lv_obj_set_pos(value_button, width - (toggle ? 74 : 70), y);
+  lv_obj_set_style_bg_color(value_button, Color(toggle ? kAccent : kPanel),
+                            0);
+  if (toggle) {
+    const uintptr_t encoded =
+        (static_cast<uintptr_t>(setting) << 8U) | 1U;
+    lv_obj_add_event_cb(value_button, CalculatorAdjust, LV_EVENT_CLICKED,
+                        reinterpret_cast<void *>(encoded));
+  }
+  lv_obj_t *value_label =
+      MakeLabel(value_button, value, &lv_font_montserrat_12, kText);
+  lv_obj_center(value_label);
+
+  if (!toggle) {
+    lv_obj_t *plus = lv_button_create(parent);
+    lv_obj_set_size(plus, 34, 32);
+    lv_obj_set_pos(plus, width - 34, y);
+    lv_obj_set_style_bg_color(plus, Color(0x334155), 0);
+    const uintptr_t encoded =
+        (static_cast<uintptr_t>(setting) << 8U) | 1U;
+    lv_obj_add_event_cb(plus, CalculatorAdjust, LV_EVENT_CLICKED,
+                        reinterpret_cast<void *>(encoded));
+    lv_obj_t *plus_label =
+        MakeLabel(plus, "+", &lv_font_montserrat_18, kText);
+    lv_obj_center(plus_label);
+  }
+}
+
+void BuildCalculator() {
+  rendered_calculator_revision = model->Revision();
+  const CalculatorSnapshot snapshot = model->GetCalculatorSnapshot();
+  lv_obj_clean(calculator_page);
+  StylePage(calculator_page);
+  const bool landscape = orientation == board::Orientation::kLandscapeLeft ||
+                         orientation == board::Orientation::kLandscapeRight;
+  if (landscape) {
+    lv_obj_add_flag(calculator_page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(calculator_page, LV_DIR_VER);
+  }
+
+  lv_obj_t *title =
+      MakeLabel(calculator_page, "CALCULATOR", &lv_font_montserrat_14, kText);
+  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 2, 2);
+  lv_obj_t *back = lv_button_create(calculator_page);
+  lv_obj_set_size(back, 52, 30);
+  lv_obj_align(back, LV_ALIGN_TOP_RIGHT, 0, -2);
+  lv_obj_set_style_bg_color(back, Color(0x334155), 0);
+  lv_obj_add_event_cb(back, CloseCalculator, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *back_label =
+      MakeLabel(back, snapshot.status == CalculatorStatus::kRolling
+                          ? "CANCEL"
+                          : "BACK",
+                &lv_font_montserrat_12, kText);
+  lv_obj_center(back_label);
+
+  if (snapshot.status == CalculatorStatus::kRolling ||
+      snapshot.status == CalculatorStatus::kComplete) {
+    lv_obj_t *preset =
+        MakeLabel(calculator_page, CalculatorPresetName(snapshot.config.preset),
+                  &lv_font_montserrat_12, 0x60a5fa);
+    lv_obj_set_pos(preset, 2, 38);
+
+    lv_obj_t *instruction =
+        MakeLabel(calculator_page, snapshot.instruction,
+                  &lv_font_montserrat_14, kText);
+    lv_obj_set_width(instruction, lv_pct(100));
+    lv_obj_set_pos(instruction, 2, 62);
+    lv_label_set_long_mode(instruction, LV_LABEL_LONG_WRAP);
+
+    char progress[48];
+    std::snprintf(progress, sizeof(progress), "%u of %u rolls complete",
+                  snapshot.completed_rolls, snapshot.total_rolls);
+    lv_obj_t *progress_label =
+        MakeLabel(calculator_page, progress, &lv_font_montserrat_12, kMuted);
+    lv_obj_set_pos(progress_label, 2, 116);
+
+    if (snapshot.status == CalculatorStatus::kComplete) {
+      lv_obj_t *result =
+          MakeLabel(calculator_page, snapshot.result_text,
+                    &lv_font_montserrat_32,
+                    snapshot.has_check && !snapshot.check_passed
+                        ? 0xf87171
+                        : 0x4ade80);
+      lv_obj_set_width(result, lv_pct(100));
+      lv_obj_set_style_text_align(result, LV_TEXT_ALIGN_CENTER, 0);
+      if (landscape) {
+        lv_obj_set_pos(result, 0, 140);
+      } else {
+        lv_obj_align(result, LV_ALIGN_CENTER, 0, 18);
+      }
+
+      lv_obj_t *again = lv_button_create(calculator_page);
+      lv_obj_set_size(again, lv_pct(100), 40);
+      if (landscape) {
+        lv_obj_set_pos(again, 0, 184);
+      } else {
+        lv_obj_align(again, LV_ALIGN_BOTTOM_MID, 0, 0);
+      }
+      lv_obj_set_style_bg_color(again, Color(kAccent), 0);
+      lv_obj_add_event_cb(again, CalculatorStart, LV_EVENT_CLICKED, nullptr);
+      lv_obj_t *again_label =
+          MakeLabel(again, "ROLL AGAIN", &lv_font_montserrat_14, kText);
+      lv_obj_center(again_label);
+    }
+    return;
+  }
+
+  lv_obj_t *preset = lv_obj_create(calculator_page);
+  lv_obj_set_size(preset, lv_pct(100), 40);
+  lv_obj_set_pos(preset, 0, 36);
+  lv_obj_set_style_bg_color(preset, Color(kAccent), 0);
+  lv_obj_set_style_border_width(preset, 0, 0);
+  lv_obj_set_style_radius(preset, 8, 0);
+  lv_obj_set_style_pad_all(preset, 0, 0);
+  lv_obj_remove_flag(preset, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_t *preset_label =
+      MakeLabel(preset, CalculatorPresetName(snapshot.config.preset),
+                &lv_font_montserrat_12, kText);
+  lv_obj_center(preset_label);
+
+  int y = 84;
+  char value[20];
+  const auto add_number = [&](const char *label, int number,
+                              CalculatorSetting setting) {
+    std::snprintf(value, sizeof(value), "%d", number);
+    AddCalculatorControl(calculator_page, y, label, value, setting);
+    y += 38;
+  };
+  if (snapshot.config.preset == CalculatorPreset::kD20Check) {
+    add_number(landscape ? "MODIFIER" : "MOD", snapshot.config.modifier,
+               CalculatorSetting::kModifier);
+    std::snprintf(value, sizeof(value), snapshot.config.dc_enabled ? "DC %u"
+                                                                  : "OFF",
+                  snapshot.config.dc);
+    AddCalculatorControl(calculator_page, y, "TARGET", value,
+                         CalculatorSetting::kDcEnabled, true);
+    y += 38;
+    if (snapshot.config.dc_enabled) {
+      add_number(landscape ? "DC VALUE" : "DC", snapshot.config.dc,
+                 CalculatorSetting::kDc);
+    }
+  } else if (snapshot.config.preset == CalculatorPreset::kAdvantage ||
+             snapshot.config.preset == CalculatorPreset::kDisadvantage) {
+    add_number(landscape ? "MODIFIER" : "MOD", snapshot.config.modifier,
+               CalculatorSetting::kModifier);
+  } else {
+    AddCalculatorControl(calculator_page, y, "DIE",
+                         CalculatorPoolDieName(snapshot.config.pool_sides),
+                         CalculatorSetting::kPoolSides, true);
+    y += 38;
+    add_number("ROLLS", snapshot.config.pool_count,
+               CalculatorSetting::kPoolCount);
+    if (snapshot.config.preset == CalculatorPreset::kSuccessPool) {
+      add_number(landscape ? "SUCCESS ON" : "TARGET",
+                 snapshot.config.threshold,
+                 CalculatorSetting::kThreshold);
+    } else if (snapshot.config.preset == CalculatorPreset::kKeepHighest ||
+               snapshot.config.preset == CalculatorPreset::kKeepLowest) {
+      add_number("KEEP", snapshot.config.keep_count,
+                 CalculatorSetting::kKeepCount);
+    } else {
+      add_number(landscape ? "MODIFIER" : "MOD",
+                 snapshot.config.modifier,
+                 CalculatorSetting::kModifier);
+      AddCalculatorControl(calculator_page, y,
+                           landscape ? "CRITICAL" : "CRIT",
+                           snapshot.config.critical ? "ON" : "OFF",
+                           CalculatorSetting::kCritical, true);
+      y += 38;
+    }
+  }
+
+  if (snapshot.status == CalculatorStatus::kError) {
+    lv_obj_t *error =
+        MakeLabel(calculator_page, snapshot.instruction,
+                  &lv_font_montserrat_12, 0xf87171);
+    lv_obj_set_width(error, lv_pct(100));
+    lv_obj_set_pos(error, 2, std::min(y + 2, 242));
+    lv_label_set_long_mode(error, LV_LABEL_LONG_WRAP);
+  }
+
+  lv_obj_t *start = lv_button_create(calculator_page);
+  lv_obj_set_size(start, lv_pct(100), 40);
+  if (landscape) {
+    lv_obj_set_pos(start, 0, y + 6);
+  } else {
+    lv_obj_align(start, LV_ALIGN_BOTTOM_MID, 0, 0);
+  }
+  lv_obj_set_style_bg_color(start, Color(0x166534), 0);
+  lv_obj_add_event_cb(start, CalculatorStart, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t *start_label =
+      MakeLabel(start, "START ROUND", &lv_font_montserrat_14, kText);
+  lv_obj_center(start_label);
+}
+
+void OpenCalculator(lv_event_t *) {
+  if (!calculator_defaults_initialized) {
+    const Snapshot snapshot = model->GetSnapshot(
+        static_cast<uint64_t>(esp_timer_get_time() / 1000));
+    if (snapshot.dice_count > 1) {
+      model->AdjustCalculator(
+          CalculatorSetting::kPoolCount,
+          static_cast<int>(snapshot.dice_count) - 1);
+    }
+    calculator_defaults_initialized = true;
+  }
+  BuildCalculator();
+  lv_obj_remove_flag(calculator_page, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(calculator_page);
+}
+
 void TileGeometry(std::size_t count, bool landscape, int *columns, int *rows) {
   if (landscape) {
     *columns = count <= 1   ? 1
@@ -778,11 +1126,16 @@ void UiTimer(lv_timer_t *) {
     }
     UpdateStatsStatus(selected);
   }
+  if (!lv_obj_has_flag(calculator_page, LV_OBJ_FLAG_HIDDEN) &&
+      snapshot.revision != rendered_calculator_revision) {
+    BuildCalculator();
+  }
 }
 
 void OrientationTask(void *) {
   board::Orientation candidate = orientation;
   int stable_samples = 0;
+  bool logged_first_sample = false;
   while (true) {
     int16_t x = 0;
     int16_t y = 0;
@@ -790,6 +1143,11 @@ void OrientationTask(void *) {
     if (board::ReadAcceleration(hardware, &x, &y, &z)) {
       const board::Orientation detected =
           board::DetectOrientation(x, y, orientation);
+      if (!logged_first_sample) {
+        ESP_LOGI(kTag, "IMU acceleration x=%d y=%d z=%d orientation=%u", x, y,
+                 z, static_cast<unsigned>(detected));
+        logged_first_sample = true;
+      }
       if (detected == candidate) {
         ++stable_samples;
       } else {
@@ -799,8 +1157,13 @@ void OrientationTask(void *) {
       if (candidate != orientation && stable_samples >= 8 &&
           lvgl_port_lock(1000)) {
         orientation = candidate;
+        ESP_LOGI(kTag, "Display orientation changed to %u (x=%d y=%d z=%d)",
+                 static_cast<unsigned>(orientation), x, y, z);
         board::SetOrientation(hardware, orientation);
         Relayout();
+        if (!lv_obj_has_flag(calculator_page, LV_OBJ_FLAG_HIDDEN)) {
+          BuildCalculator();
+        }
         lvgl_port_unlock();
       }
     }
@@ -817,6 +1180,7 @@ esp_err_t StartUi(board::Hardware *board_hardware, DiceModel *dice_model) {
   if (!lvgl_port_lock(1000)) {
     return ESP_ERR_TIMEOUT;
   }
+  board::SetOrientation(hardware, orientation);
   root = lv_screen_active();
   lv_obj_set_style_bg_color(root, Color(kBackground), 0);
   lv_obj_set_style_border_width(root, 0, 0);
@@ -878,6 +1242,16 @@ esp_err_t StartUi(board::Hardware *board_hardware, DiceModel *dice_model) {
   lv_obj_set_size(stats_page, lv_pct(100), lv_pct(100));
   lv_obj_set_pos(stats_page, 0, 0);
   lv_obj_add_flag(stats_page, LV_OBJ_FLAG_HIDDEN);
+
+  calculator_page = lv_obj_create(root);
+  lv_obj_set_size(calculator_page, lv_pct(100), lv_pct(100));
+  lv_obj_set_pos(calculator_page, 0, 0);
+  lv_obj_add_flag(calculator_page, LV_OBJ_FLAG_HIDDEN);
+
+  mode_page = lv_obj_create(root);
+  lv_obj_set_size(mode_page, lv_pct(100), lv_pct(100));
+  lv_obj_set_pos(mode_page, 0, 0);
+  lv_obj_add_flag(mode_page, LV_OBJ_FLAG_HIDDEN);
 
   Relayout();
   lv_timer_create(UiTimer, 250, nullptr);

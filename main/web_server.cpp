@@ -50,6 +50,9 @@ constexpr char kIndexHtml[] = R"HTML(<!doctype html>
 main{max-width:1000px;margin:auto;padding:16px}.top{display:flex;align-items:center;justify-content:space-between}
 h1,h2,p{margin:0}.muted{color:var(--muted)}button,input{font:inherit;border-radius:8px}
 button{border:0;background:#334155;color:var(--text);padding:9px 12px;cursor:pointer}
+button:disabled{cursor:not-allowed;opacity:.45}
+.calc-controls{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.calc-controls button{min-width:42px}
+.calc-result{font-size:36px;font-weight:700;color:#4ade80;margin-top:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:14px 0}
 .card{background:var(--panel);border:1px solid #334155;border-radius:12px;padding:12px;min-height:120px}
 .die{cursor:pointer}
@@ -88,6 +91,14 @@ width:min(460px,100%);max-height:85vh;overflow:auto}.modal-head{display:flex;ali
 <div class="aggregate-row"><button id="aggregate" class="card aggregate" onclick="action('cycle')">
 <span class="mode-detail"><span id="mode">SUM</span><small id="roll-count">0 rolls</small></span><strong id="total">-</strong></button>
 <button class="clear" onclick="action('clear')">CLEAR</button></div>
+<section class="section card"><h2>Guided calculator</h2>
+<div class="calc-controls"><button id="calc-prev" onclick="action('calcPrev')">‹</button>
+<button id="calc-preset" onclick="action('calcNext')">D20 CHECK ›</button></div>
+<div id="calc-config" class="calc-controls"></div>
+<p id="calc-instruction" class="muted" style="margin-top:10px"></p>
+<div id="calc-result" class="calc-result"></div>
+<div class="calc-controls"><button id="calc-start" onclick="action('calcStart')">Start round</button>
+<button onclick="action('calcCancel')">Cancel</button></div></section>
 <section class="section"><h2>Pair dice</h2><div id="pairing"></div></section>
 <section class="section"><h2>Last 20 rolls</h2><div id="history"></div></section>
 <section class="section"><h2>Wi-Fi</h2><p class="muted">The Pixels-Dice access point remains available. Save credentials to also join your home network.</p>
@@ -124,12 +135,30 @@ document.querySelector('#die-subtitle').textContent=`${h.history.length} of the 
 document.querySelector('#die-history').innerHTML=h.history.map(x=>`<div class="row"><div class="grow muted">${Math.floor(x.ageMs/1000)}s ago</div><div class="history-value">${x.value}</div></div>`).join('')||'<div class="empty">No completed rolls yet</div>'}
 function showDieHistory(id){selectedDieId=id;document.querySelector('#die-modal').hidden=false;blink(id);inspect(id);loadDieHistory()}
 function closeDieHistory(){blink(selectedDieId);selectedDieId='';document.querySelector('#die-modal').hidden=true}
+function calcButton(label,op){return `<button onclick="action('${op}')">${esc(label)}</button>`}
+function renderCalculator(c){document.querySelector('#calc-preset').textContent=c.preset+' ›';
+const rolling=c.status==='ROLLING';document.querySelector('#calc-prev').disabled=rolling;
+document.querySelector('#calc-preset').disabled=rolling;
+const controls=[];const number=(label,value,down,up)=>controls.push(`<span class="muted">${esc(label)}</span>${calcButton('−',down)}<b>${value}</b>${calcButton('+',up)}`);
+if(!rolling&&c.preset==='D20 CHECK'){number('Modifier',c.modifier,'calcModDown','calcModUp');
+controls.push(calcButton(c.dcEnabled?`DC ${c.dc}`:'DC off','calcDcToggle'));if(c.dcEnabled)number('DC',c.dc,'calcDcDown','calcDcUp')}
+else if(!rolling&&(c.preset==='ADVANTAGE'||c.preset==='DISADVANTAGE'))number('Modifier',c.modifier,'calcModDown','calcModUp');
+else if(!rolling){controls.push(`<span class="muted">Dice</span>${calcButton(c.poolDie,'calcDie')}`);number('Rolls',c.poolCount,'calcPoolDown','calcPoolUp');
+if(c.preset==='SUCCESS POOL')number('Success on',c.threshold,'calcThresholdDown','calcThresholdUp');
+else if(c.preset==='KEEP HIGHEST'||c.preset==='KEEP LOWEST')number('Keep',c.keepCount,'calcKeepDown','calcKeepUp');
+else{number('Modifier',c.modifier,'calcModDown','calcModUp');controls.push(calcButton(c.critical?'Critical on':'Critical off','calcCrit'))}}
+document.querySelector('#calc-config').innerHTML=controls.join('');
+document.querySelector('#calc-instruction').textContent=c.instruction+(c.status==='ROLLING'?` (${c.completedRolls}/${c.totalRolls})`:'');
+document.querySelector('#calc-result').textContent=c.hasResult?c.resultText:'';
+const start=document.querySelector('#calc-start');start.disabled=rolling;
+start.textContent=rolling?'Rolling…':(c.status==='COMPLETE'?'Roll again':'Start round')}
 async function refresh(){if(refreshing)return;refreshing=true;try{const r=await fetch('/api/state',{cache:'no-store'});const s=await r.json();
 currentDice=s.dice;updateDieStatus();
 document.querySelector('#status').textContent=`${s.dice.length} paired · live`;
 document.querySelector('#dice').innerHTML=s.dice.length?s.dice.map(dieCard).join(''):'<div class="card empty">No dice paired</div>';
 document.querySelector('#mode').textContent=s.aggregate.mode+' ›';document.querySelector('#total').textContent=s.aggregate.hasValue?s.aggregate.value:'-';
 document.querySelector('#roll-count').textContent=s.aggregate.rollCount+' roll'+(s.aggregate.rollCount===1?'':'s');
+renderCalculator(s.calculator);
 const paired=s.dice.map(d=>`<div class="row"><div class="grow"><b>${esc(d.type)} ${esc(d.name)}</b><div class="muted">${d.id}</div></div><button onclick="action('unpair','${d.id}')">Remove</button></div>`);
 const found=s.candidates.map(d=>`<div class="row"><div class="grow"><b>${esc(d.type)} ${esc(d.name)}</b><div class="muted">${d.id} · ${d.rssi} dBm</div></div><button onclick="action('pair','${d.id}')">Add</button></div>`);
 document.querySelector('#pairing').innerHTML=[...paired,...found].join('')||'<div class="empty">No Pixels discovered yet</div>';
@@ -242,6 +271,45 @@ void SendDie(httpd_req_t *request, const Die &die, uint64_t now_ms) {
   }
 }
 
+void SendCalculator(httpd_req_t *request,
+                    const CalculatorSnapshot &calculator) {
+  char buffer[512];
+  std::snprintf(
+      buffer, sizeof(buffer),
+        "{\"preset\":\"%s\",\"status\":\"%s\",\"modifier\":%d,\"dc\":%u,"
+        "\"dcEnabled\":%s,\"threshold\":%u,\"poolCount\":%u,\"keepCount\":%u,"
+        "\"poolSides\":%u,\"poolDie\":\"%s\","
+        "\"critical\":%s,\"completedRolls\":%u,\"totalRolls\":%u,"
+        "\"recipeStep\":%u,\"recipeSteps\":%u,\"expectedId\":\"%08lx\","
+        "\"expectedType\":\"%s\",\"expectedName\":",
+        CalculatorPresetName(calculator.config.preset),
+        CalculatorStatusName(calculator.status), calculator.config.modifier,
+        calculator.config.dc, calculator.config.dc_enabled ? "true" : "false",
+        calculator.config.threshold, calculator.config.pool_count,
+        calculator.config.keep_count,
+        calculator.config.pool_sides,
+        CalculatorPoolDieName(calculator.config.pool_sides),
+        calculator.config.critical ? "true" : "false",
+        calculator.completed_rolls, calculator.total_rolls,
+        calculator.recipe_step, calculator.recipe_steps,
+        static_cast<unsigned long>(calculator.expected_pixel_id),
+        pixels::DieTypeName(calculator.expected_type));
+  httpd_resp_sendstr_chunk(request, buffer);
+  SendJsonString(request, calculator.expected_name);
+  std::snprintf(buffer, sizeof(buffer),
+                  ",\"result\":%d,\"hasResult\":%s,\"hasCheck\":%s,"
+                  "\"checkPassed\":%s,\"rejected\":%s,\"instruction\":",
+                  calculator.result, calculator.has_result ? "true" : "false",
+                  calculator.has_check ? "true" : "false",
+                  calculator.check_passed ? "true" : "false",
+                  calculator.last_attempt_rejected ? "true" : "false");
+  httpd_resp_sendstr_chunk(request, buffer);
+  SendJsonString(request, calculator.instruction);
+  httpd_resp_sendstr_chunk(request, ",\"resultText\":");
+  SendJsonString(request, calculator.result_text);
+  httpd_resp_sendstr_chunk(request, "}");
+}
+
 esp_err_t IndexHandler(httpd_req_t *request) {
   httpd_resp_set_type(request, "text/html");
   httpd_resp_set_hdr(request, "Cache-Control", "no-store");
@@ -275,11 +343,13 @@ esp_err_t StateHandler(httpd_req_t *request) {
   char buffer[256];
   std::snprintf(buffer, sizeof(buffer),
                 "],\"aggregate\":{\"mode\":\"%s\",\"value\":%lld,"
-                "\"rollCount\":%lu,\"hasValue\":%s},\"history\":[",
+                "\"rollCount\":%lu,\"hasValue\":%s},\"calculator\":",
                 mode, static_cast<long long>(snapshot.aggregate_value),
                 static_cast<unsigned long>(snapshot.aggregate_roll_count),
                 snapshot.has_aggregate ? "true" : "false");
   httpd_resp_sendstr_chunk(request, buffer);
+  SendCalculator(request, snapshot.calculator);
+  httpd_resp_sendstr_chunk(request, ",\"history\":[");
   for (std::size_t i = 0; i < snapshot.history_count; ++i) {
     const RollEvent &event = snapshot.history[i];
     if (i != 0) {
@@ -409,7 +479,7 @@ esp_err_t HistoryHandler(httpd_req_t *request) {
 }
 
 esp_err_t ActionHandler(httpd_req_t *request) {
-  char operation[16];
+  char operation[24];
   if (!QueryValue(request, "op", operation, sizeof(operation))) {
     return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
                                "Missing operation");
@@ -422,6 +492,63 @@ esp_err_t ActionHandler(httpd_req_t *request) {
   } else if (std::strcmp(operation, "clear") == 0) {
     model->ClearAggregate();
     success = true;
+  } else if (std::strcmp(operation, "calcStart") == 0) {
+    if (!model->StartCalculator()) {
+      httpd_resp_set_status(request, "409 Conflict");
+      return httpd_resp_sendstr(request,
+                                "Calculator is already rolling or cannot start");
+    }
+    success = true;
+    save_change = false;
+  } else if (std::strcmp(operation, "calcCancel") == 0) {
+    model->CancelCalculator();
+    success = true;
+    save_change = false;
+  } else if (std::strncmp(operation, "calc", 4) == 0) {
+    CalculatorSetting setting = CalculatorSetting::kPreset;
+    int delta = 1;
+    if (std::strcmp(operation, "calcPrev") == 0) {
+      delta = -1;
+    } else if (std::strcmp(operation, "calcNext") == 0) {
+      delta = 1;
+    } else if (std::strcmp(operation, "calcModDown") == 0) {
+      setting = CalculatorSetting::kModifier;
+      delta = -1;
+    } else if (std::strcmp(operation, "calcModUp") == 0) {
+      setting = CalculatorSetting::kModifier;
+    } else if (std::strcmp(operation, "calcDcToggle") == 0) {
+      setting = CalculatorSetting::kDcEnabled;
+    } else if (std::strcmp(operation, "calcDcDown") == 0) {
+      setting = CalculatorSetting::kDc;
+      delta = -1;
+    } else if (std::strcmp(operation, "calcDcUp") == 0) {
+      setting = CalculatorSetting::kDc;
+    } else if (std::strcmp(operation, "calcThresholdDown") == 0) {
+      setting = CalculatorSetting::kThreshold;
+      delta = -1;
+    } else if (std::strcmp(operation, "calcThresholdUp") == 0) {
+      setting = CalculatorSetting::kThreshold;
+    } else if (std::strcmp(operation, "calcPoolDown") == 0) {
+      setting = CalculatorSetting::kPoolCount;
+      delta = -1;
+    } else if (std::strcmp(operation, "calcPoolUp") == 0) {
+      setting = CalculatorSetting::kPoolCount;
+    } else if (std::strcmp(operation, "calcKeepDown") == 0) {
+      setting = CalculatorSetting::kKeepCount;
+      delta = -1;
+    } else if (std::strcmp(operation, "calcKeepUp") == 0) {
+      setting = CalculatorSetting::kKeepCount;
+    } else if (std::strcmp(operation, "calcDie") == 0) {
+      setting = CalculatorSetting::kPoolSides;
+    } else if (std::strcmp(operation, "calcCrit") == 0) {
+      setting = CalculatorSetting::kCritical;
+    } else {
+      return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
+                                 "Unknown calculator operation");
+    }
+    model->AdjustCalculator(setting, delta);
+    success = true;
+    save_change = false;
   } else {
     char id_text[16];
     if (!QueryValue(request, "id", id_text, sizeof(id_text))) {
